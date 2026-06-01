@@ -1,27 +1,18 @@
 @echo off
 chcp 65001 >nul
-title Auto-Scheduler Starter
+title Auto-Scheduler
 
 echo ========================================
 echo    Auto-Scheduler
 echo ========================================
 echo.
-echo Starting Backend Server...
-
-start "Auto-Scheduler Backend" cmd /k "cd /d "%~dp0server" && npm run dev"
-
-timeout /t 3 /nobreak >nul
-
-echo Starting Frontend...
-
-start "Auto-Scheduler Frontend" cmd /k "cd /d "%~dp0client" && npm run dev"
-
-echo.
-echo ========================================
-echo    Both services are starting...
+echo Starting Backend and Frontend...
 echo    Backend: http://localhost:3001
 echo    Frontend: http://localhost:5173
-echo ========================================
 echo.
-echo Press any key to exit this window...
-pause >nul
+echo Press Ctrl+C to stop all services...
+echo.
+
+cd /d "%~dp0"
+start "" http://localhost:5173
+call npm run dev
