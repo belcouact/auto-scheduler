@@ -63,6 +63,16 @@ export interface HistoryEntry {
   duration_ms: number | null
 }
 
+export interface AppStatus {
+  server: 'online' | 'offline'
+  timestamp: string
+  clients: number
+  scheduledTasks: number
+  totalTasks: number
+  enabledTasks: number
+  failedTasks: number
+}
+
 export const taskApi = {
   list: (params?: { enabled?: boolean; type?: string; search?: string }) =>
     apiClient.get<{ data: Task[] }>('/tasks', { params }).then(r => r.data),
@@ -81,6 +91,15 @@ export const taskApi = {
 
   execute: (id: string) =>
     apiClient.post<{ message: string }>(`/tasks/execute/${id}`).then(r => r.data),
+
+  duplicate: (id: string) =>
+    apiClient.post<{ data: Task; message: string }>(`/tasks/duplicate/${id}`).then(r => r.data),
+
+  batchSetEnabled: (ids: string[], enabled: boolean) =>
+    apiClient.patch<{ message: string; data: { ids: string[]; enabled: boolean } }>('/tasks/batch/enabled', { ids, enabled }).then(r => r.data),
+
+  batchDelete: (ids: string[]) =>
+    apiClient.delete<{ message: string }>('/tasks/batch', { data: { ids } }).then(r => r.data),
 }
 
 export const historyApi = {
@@ -117,4 +136,9 @@ export const settingsApi = {
 
   getLogs: (lines?: number) =>
     apiClient.get<{ data: any[] }>('/settings/logs', { params: { lines } }).then(r => r.data),
+}
+
+export const statusApi = {
+  get: () =>
+    apiClient.get<{ data: AppStatus }>('/status').then(r => r.data),
 }

@@ -34,75 +34,80 @@
 
         <n-gi>
           <n-form-item label="调度表达式" path="schedule_expression">
-            <n-date-picker
-              v-if="formData.schedule_type === 'once'"
-              v-model:value="scheduleDateTime"
-              type="datetime"
-              :placeholder="scheduleExpressionPlaceholder"
-              style="width: 100%"
-              @update:value="onScheduleDateTimeChange"
-            />
-            <n-time-picker
-              v-else-if="formData.schedule_type === 'daily'"
-              v-model:formatted-value="scheduleTimeString"
-              format="HH:mm"
-              value-format="HH:mm"
-              :placeholder="scheduleExpressionPlaceholder"
-              style="width: 100%"
-              @update:formatted-value="onScheduleTimeStringChange"
-            />
-            <n-space v-else-if="formData.schedule_type === 'weekly'" style="width: 100%">
-              <n-select
-                v-model:value="scheduleWeekday"
-                :options="weekdayOptions"
-                placeholder="选择星期"
-                style="flex: 1"
-                @update:value="onWeekdayChange"
+            <n-space vertical style="width: 100%">
+              <n-date-picker
+                v-if="formData.schedule_type === 'once'"
+                v-model:value="scheduleDateTime"
+                type="datetime"
+                :placeholder="scheduleExpressionPlaceholder"
+                style="width: 100%"
+                @update:value="onScheduleDateTimeChange"
               />
               <n-time-picker
+                v-else-if="formData.schedule_type === 'daily'"
                 v-model:formatted-value="scheduleTimeString"
                 format="HH:mm"
                 value-format="HH:mm"
-                placeholder="选择时间"
-                style="flex: 1"
+                :placeholder="scheduleExpressionPlaceholder"
+                style="width: 100%"
                 @update:formatted-value="onScheduleTimeStringChange"
               />
-            </n-space>
-            <n-space v-else-if="formData.schedule_type === 'monthly'" style="width: 100%">
-              <n-input-number
-                v-model:value="scheduleMonthDayNum"
-                :min="1"
-                :max="31"
-                placeholder="几号"
-                style="flex: 1"
-                @update:value="onMonthDayNumChange"
+              <n-space v-else-if="formData.schedule_type === 'weekly'" style="width: 100%">
+                <n-select
+                  v-model:value="scheduleWeekday"
+                  :options="weekdayOptions"
+                  placeholder="选择星期"
+                  style="flex: 1"
+                  @update:value="onWeekdayChange"
+                />
+                <n-time-picker
+                  v-model:formatted-value="scheduleTimeString"
+                  format="HH:mm"
+                  value-format="HH:mm"
+                  placeholder="选择时间"
+                  style="flex: 1"
+                  @update:formatted-value="onScheduleTimeStringChange"
+                />
+              </n-space>
+              <n-space v-else-if="formData.schedule_type === 'monthly'" style="width: 100%">
+                <n-input-number
+                  v-model:value="scheduleMonthDayNum"
+                  :min="1"
+                  :max="31"
+                  placeholder="几号"
+                  style="flex: 1"
+                  @update:value="onMonthDayNumChange"
+                />
+                <n-time-picker
+                  v-model:formatted-value="scheduleTimeString"
+                  format="HH:mm"
+                  value-format="HH:mm"
+                  placeholder="选择时间"
+                  style="flex: 1"
+                  @update:formatted-value="onScheduleTimeStringChange"
+                />
+              </n-space>
+              <n-input
+                v-else-if="formData.schedule_type === 'cron'"
+                v-model:value="formData.schedule_expression"
+                :placeholder="scheduleExpressionPlaceholder"
               />
-              <n-time-picker
-                v-model:formatted-value="scheduleTimeString"
-                format="HH:mm"
-                value-format="HH:mm"
-                placeholder="选择时间"
-                style="flex: 1"
-                @update:formatted-value="onScheduleTimeStringChange"
-              />
-            </n-space>
-            <n-input
-              v-else-if="formData.schedule_type === 'cron'"
-              v-model:value="formData.schedule_expression"
-              :placeholder="scheduleExpressionPlaceholder"
-            />
-            <n-space v-else-if="formData.schedule_type === 'hourly'" style="width: 100%">
-              <n-input-number
-                v-model:value="scheduleMinuteNum"
-                :min="0"
-                :max="59"
-                placeholder="第几分钟"
-                style="flex: 1"
-                @update:value="onHourlyMinuteChange"
-              />
-              <n-tag type="info" style="flex: 2; justify-content: center">
-                每小时在第 {{ scheduleMinuteNum ?? 0 }} 分钟执行
-              </n-tag>
+              <n-space v-else-if="formData.schedule_type === 'hourly'" style="width: 100%">
+                <n-input-number
+                  v-model:value="scheduleMinuteNum"
+                  :min="0"
+                  :max="59"
+                  placeholder="第几分钟"
+                  style="flex: 1"
+                  @update:value="onHourlyMinuteChange"
+                />
+                <n-tag type="info" style="flex: 2; justify-content: center">
+                  每小时在第 {{ scheduleMinuteNum ?? 0 }} 分钟执行
+                </n-tag>
+              </n-space>
+              <n-alert :type="scheduleAlertType" :show-icon="false">
+                {{ schedulePreview }}
+              </n-alert>
             </n-space>
           </n-form-item>
         </n-gi>
@@ -230,7 +235,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useMessage, NCard, NForm, NFormItem, NInput, NGrid, NGi, NSelect, NSlider, NDynamicTags, NDivider, NButton, NSpace, NInputNumber, NDatePicker, NTimePicker, NTag } from 'naive-ui'
+import { useMessage, NAlert, NCard, NForm, NFormItem, NInput, NGrid, NGi, NSelect, NSlider, NDynamicTags, NDivider, NButton, NSpace, NInputNumber, NDatePicker, NTimePicker, NTag } from 'naive-ui'
 import type { FormInst, FormRules } from 'naive-ui'
 import { taskApi, type Task } from '@/api'
 
@@ -424,16 +429,90 @@ const scheduleExpressionPlaceholder = computed(() => {
   return map[formData.value.schedule_type || 'once']
 })
 
+const schedulePreview = computed(() => {
+  const expression = formData.value.schedule_expression || '-'
+  switch (formData.value.schedule_type) {
+    case 'once':
+      return `将在 ${expression} 执行一次`
+    case 'daily':
+      return `每天 ${expression} 执行`
+    case 'weekly': {
+      const [weekday, time] = expression.split(' ')
+      const weekdayLabel = weekdayOptions.find((option) => option.value === weekday)?.label || '每周'
+      return `${weekdayLabel} ${time || ''} 执行`
+    }
+    case 'monthly': {
+      const [day, time] = expression.split(' ')
+      return `每月 ${day || '?'} 号 ${time || ''} 执行`
+    }
+    case 'hourly':
+      return `每小时第 ${expression} 分钟执行`
+    case 'cron':
+      return isScheduleExpressionValid(expression, 'cron')
+        ? `使用 Cron 表达式执行: ${expression}`
+        : 'Cron 表达式格式无效，请使用标准 5 段格式，例如 */5 * * * *'
+    default:
+      return expression
+  }
+})
+
+const scheduleAlertType = computed(() => isScheduleExpressionValid(
+  formData.value.schedule_expression || '',
+  formData.value.schedule_type || 'once'
+) ? 'info' : 'warning')
+
 const rules: FormRules = {
   name: { required: true, message: '请输入任务名称', trigger: 'blur' },
   type: { required: true, message: '请选择任务类型', trigger: 'change' },
   schedule_type: { required: true, message: '请选择调度类型', trigger: 'change' },
-  schedule_expression: { required: true, message: '请输入调度表达式', trigger: 'blur' },
-  script_path: { required: true, message: '请输入脚本路径', trigger: 'blur' },
-  popup_content: { required: true, message: '请输入弹窗内容', trigger: 'blur' },
-  webhook_url: { required: true, message: '请输入Webhook URL', trigger: 'blur' },
-  system_action: { required: true, message: '请选择系统操作', trigger: 'change' },
-  ai_search_query: { required: true, message: '请输入搜索内容', trigger: 'blur' },
+  schedule_expression: {
+    required: true,
+    trigger: ['blur', 'change'],
+    validator: (_rule, value: string) => {
+      if (!value) {
+        return new Error('请输入调度表达式')
+      }
+      if (!isScheduleExpressionValid(value, formData.value.schedule_type || 'once')) {
+        return new Error('调度表达式格式不正确')
+      }
+      return true
+    },
+  },
+  script_path: {
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (formData.value.type !== 'script') return true
+      return value ? true : new Error('请输入脚本路径')
+    },
+  },
+  popup_content: {
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (formData.value.type !== 'popup') return true
+      return value ? true : new Error('请输入弹窗内容')
+    },
+  },
+  webhook_url: {
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (formData.value.type !== 'webhook') return true
+      return value ? true : new Error('请输入Webhook URL')
+    },
+  },
+  system_action: {
+    trigger: 'change',
+    validator: (_rule, value: string | null) => {
+      if (formData.value.type !== 'system') return true
+      return value ? true : new Error('请选择系统操作')
+    },
+  },
+  ai_search_query: {
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (formData.value.type !== 'ai_search') return true
+      return value ? true : new Error('请输入搜索内容')
+    },
+  },
 }
 
 const onTypeChange = (type: string) => {
@@ -521,4 +600,57 @@ onMounted(async () => {
     }
   }
 })
+
+function isScheduleExpressionValid(expression: string, type: string): boolean {
+  const value = expression.trim()
+  if (!value) return false
+
+  switch (type) {
+    case 'once':
+      return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    case 'daily':
+      return /^([01]?\d|2[0-3]):[0-5]\d$/.test(value)
+    case 'weekly':
+      return /^[0-6]\s+([01]?\d|2[0-3]):[0-5]\d$/.test(value)
+    case 'monthly':
+      return /^(?:[1-9]|[12]\d|3[01])\s+([01]?\d|2[0-3]):[0-5]\d$/.test(value)
+    case 'hourly': {
+      const minute = Number(value)
+      return Number.isInteger(minute) && minute >= 0 && minute <= 59
+    }
+    case 'cron':
+      return isValidCron(value)
+    default:
+      return true
+  }
+}
+
+function isValidCron(value: string): boolean {
+  const parts = value.split(/\s+/)
+  if (parts.length !== 5) return false
+
+  return parts.every((part, index) => validateCronPart(part, index))
+}
+
+function validateCronPart(part: string, index: number): boolean {
+  if (part === '*') return true
+
+  const [min, max] = index === 4 ? [0, 6] : index === 3 ? [1, 31] : index === 2 ? [1, 12] : index === 1 ? [0, 23] : [0, 59]
+
+  const segments = part.split(',')
+  return segments.every((segment) => {
+    if (/^\*\/\d+$/.test(segment)) {
+      return Number(segment.slice(2)) > 0
+    }
+    if (/^\d+$/.test(segment)) {
+      const value = Number(segment)
+      return value >= min && value <= max
+    }
+    if (/^\d+-\d+$/.test(segment)) {
+      const [start, end] = segment.split('-').map(Number)
+      return start >= min && end <= max && start <= end
+    }
+    return false
+  })
+}
 </script>

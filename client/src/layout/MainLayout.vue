@@ -17,8 +17,9 @@
       <n-layout-header bordered style="padding: 12px 24px; display: flex; justify-content: space-between; align-items: center">
         <h2 style="margin: 0">{{ currentPageTitle }}</h2>
         <n-space>
-          <n-tag type="success" size="small">服务运行中</n-tag>
-          <n-time :time="new Date()" type="datetime" />
+          <n-tag :type="serverTagType" size="small">{{ serverStatusLabel }}</n-tag>
+          <n-tag size="small" type="info">计划任务 {{ status.scheduledTasks }}</n-tag>
+          <n-time :time="now" type="datetime" />
         </n-space>
       </n-layout-header>
       <n-layout-content style="padding: 24px; background: #f5f5f5">
@@ -36,6 +37,7 @@ import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NIcon, NMenu, NTa
 import type { MenuOption } from 'naive-ui'
 import PopupOverlay from '@/components/PopupOverlay.vue'
 import { connectSSE, disconnectSSE } from '@/composables/useSSE'
+import { statusApi, type AppStatus } from '@/api'
 
 const CalendarIcon = {
   render() {
@@ -57,11 +59,31 @@ const TaskIcon = {
   }
 }
 
+const DashboardIcon = {
+  render() {
+    return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
+      h('rect', { x: '3', y: '3', width: '7', height: '8', rx: '1' }),
+      h('rect', { x: '14', y: '3', width: '7', height: '5', rx: '1' }),
+      h('rect', { x: '14', y: '12', width: '7', height: '9', rx: '1' }),
+      h('rect', { x: '3', y: '15', width: '7', height: '6', rx: '1' }),
+    ])
+  }
+}
+
 const HistoryIcon = {
   render() {
     return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
       h('circle', { cx: '12', cy: '12', r: '10' }),
       h('polyline', { points: '12 6 12 12 16 14' }),
+    ])
+  }
+}
+
+const AIIcon = {
+  render() {
+    return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
+      h('path', { d: 'M12 3l1.8 4.7L18.5 9l-4.7 1.3L12 15l-1.8-4.7L5.5 9l4.7-1.3L12 3z' }),
+      h('path', { d: 'M19 14l.9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14z' }),
     ])
   }
 }
@@ -78,10 +100,30 @@ const SettingsIcon = {
 const router = useRouter()
 const route = useRoute()
 const collapsed = ref(false)
+const now = ref(new Date())
+const status = ref<AppStatus>({
+  server: 'offline',
+  timestamp: '',
+  clients: 0,
+  scheduledTasks: 0,
+  totalTasks: 0,
+  enabledTasks: 0,
+  failedTasks: 0,
+})
+
+let clockTimer: number | null = null
+let statusTimer: number | null = null
 
 const currentRoute = computed(() => route.path)
+const serverStatusLabel = computed(() => status.value.server === 'online' ? '服务在线' : '服务离线')
+const serverTagType = computed(() => status.value.server === 'online' ? 'success' : 'error')
 
 const menuOptions: MenuOption[] = [
+  {
+    label: '概览',
+    key: '/dashboard',
+    icon: () => h(NIcon, null, { default: () => h(DashboardIcon) }),
+  },
   {
     label: '任务管理',
     key: '/tasks',
@@ -93,6 +135,11 @@ const menuOptions: MenuOption[] = [
     icon: () => h(NIcon, null, { default: () => h(HistoryIcon) }),
   },
   {
+    label: 'AI 助手',
+    key: '/ai',
+    icon: () => h(NIcon, null, { default: () => h(AIIcon) }),
+  },
+  {
     label: '系统设置',
     key: '/settings',
     icon: () => h(NIcon, null, { default: () => h(SettingsIcon) }),
@@ -100,9 +147,11 @@ const menuOptions: MenuOption[] = [
 ]
 
 const pageTitleMap: Record<string, string> = {
+  '/dashboard': '概览',
   '/tasks': '任务管理',
   '/tasks/new': '创建任务',
   '/history': '执行历史',
+  '/ai': 'AI 助手',
   '/settings': '系统设置',
 }
 
@@ -118,12 +167,32 @@ const handleMenuSelect = (key: string) => {
   router.push(key)
 }
 
+const loadStatus = async () => {
+  try {
+    const result = await statusApi.get()
+    status.value = result.data
+  } catch (error) {
+    status.value = {
+      ...status.value,
+      server: 'offline',
+      timestamp: new Date().toISOString(),
+    }
+  }
+}
+
 onMounted(() => {
   connectSSE()
+  loadStatus()
+  clockTimer = window.setInterval(() => {
+    now.value = new Date()
+  }, 1000)
+  statusTimer = window.setInterval(loadStatus, 15000)
 })
 
 onUnmounted(() => {
   disconnectSSE()
+  if (clockTimer) window.clearInterval(clockTimer)
+  if (statusTimer) window.clearInterval(statusTimer)
 })
 </script>
 

@@ -22,9 +22,14 @@
       </template>
 
       <n-space style="margin-bottom: 16px">
-        <n-input v-model:value="searchText" placeholder="搜索任务..." style="width: 200px" @update:value="loadTasks" clearable />
-        <n-select v-model:value="filterType" placeholder="任务类型" :options="typeOptions" style="width: 150px" @update:value="loadTasks" clearable />
-        <n-select v-model:value="filterEnabled" placeholder="状态" :options="statusOptions" style="width: 120px" @update:value="loadTasks" clearable />
+        <n-input v-model:value="searchText" placeholder="搜索任务..." style="width: 200px" clearable />
+        <n-select v-model:value="filterType" placeholder="任务类型" :options="typeOptions" style="width: 150px" clearable />
+        <n-select v-model:value="filterEnabled" placeholder="状态" :options="statusOptions" style="width: 120px" clearable />
+        <n-button v-if="checkedRowKeys.length > 0" :loading="bulkLoading" @click="batchSetEnabled(true)">批量启用</n-button>
+        <n-button v-if="checkedRowKeys.length > 0" :loading="bulkLoading" @click="batchSetEnabled(false)">批量禁用</n-button>
+        <n-button v-if="checkedRowKeys.length > 0" type="error" :loading="bulkLoading" @click="batchDeleteTasks">
+          批量删除 ({{ checkedRowKeys.length }})
+        </n-button>
         <n-button @click="loadTasks">刷新</n-button>
       </n-space>
 
@@ -34,6 +39,8 @@
         :loading="loading"
         :pagination="{ pageSize: 20 }"
         :row-key="(row: Task) => row.id"
+        :checked-row-keys="checkedRowKeys"
+        @update:checked-row-keys="onCheckedRowKeysChange"
       />
     </n-card>
 
@@ -79,7 +86,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, h, onMounted } from 'vue'
+import { ref, h, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, useDialog, NButton, NTag, NIcon, NSpace, NSwitch, NTooltip, NCard, NDataTable, NInput, NSelect, NModal, NDescriptions, NDescriptionsItem, NAlert } from 'naive-ui'
 import { taskApi, aiApi, type Task } from '@/api'
@@ -98,12 +105,16 @@ const showAiCreate = ref(false)
 const aiDescription = ref('')
 const aiCreating = ref(false)
 const aiPreview = ref<Task | null>(null)
+const checkedRowKeys = ref<string[]>([])
+const bulkLoading = ref(false)
+let filterTimer: number | null = null
 
 const typeOptions = [
   { label: '脚本', value: 'script' },
   { label: '弹窗', value: 'popup' },
   { label: 'Webhook', value: 'webhook' },
   { label: '系统', value: 'system' },
+  { label: 'AI 搜索', value: 'ai_search' },
 ]
 
 const statusOptions = [
@@ -165,6 +176,16 @@ const executeTask = async (task: Task) => {
   }
 }
 
+const duplicateTask = async (task: Task) => {
+  try {
+    await taskApi.duplicate(task.id)
+    message.success('任务已复制为草稿')
+    await loadTasks()
+  } catch (error) {
+    message.error('复制失败')
+  }
+}
+
 const deleteTask = (task: Task) => {
   dialog.warning({
     title: '确认删除',
@@ -178,6 +199,46 @@ const deleteTask = (task: Task) => {
         await loadTasks()
       } catch (error) {
         message.error('删除失败')
+      }
+    },
+  })
+}
+
+const batchSetEnabled = async (enabled: boolean) => {
+  if (checkedRowKeys.value.length === 0) return
+
+  bulkLoading.value = true
+  try {
+    await taskApi.batchSetEnabled(checkedRowKeys.value, enabled)
+    message.success(`已${enabled ? '启用' : '禁用'} ${checkedRowKeys.value.length} 个任务`)
+    checkedRowKeys.value = []
+    await loadTasks()
+  } catch (error) {
+    message.error('批量操作失败')
+  } finally {
+    bulkLoading.value = false
+  }
+}
+
+const batchDeleteTasks = () => {
+  if (checkedRowKeys.value.length === 0) return
+
+  dialog.warning({
+    title: '确认删除',
+    content: `确定要删除选中的 ${checkedRowKeys.value.length} 个任务吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      bulkLoading.value = true
+      try {
+        await taskApi.batchDelete(checkedRowKeys.value)
+        message.success(`已删除 ${checkedRowKeys.value.length} 个任务`)
+        checkedRowKeys.value = []
+        await loadTasks()
+      } catch (error) {
+        message.error('批量删除失败')
+      } finally {
+        bulkLoading.value = false
       }
     },
   })
@@ -236,6 +297,15 @@ const getScheduleLabel = (task: Task) => {
   return `${typeMap[task.schedule_type] || task.schedule_type} ${task.schedule_expression ? '- ' + task.schedule_expression : ''}`
 }
 
+const formatDateTime = (value: string | null | undefined) => {
+  if (!value) return '-'
+  return new Date(value).toLocaleString('zh-CN')
+}
+
+const onCheckedRowKeysChange = (keys: (string | number)[]) => {
+  checkedRowKeys.value = keys.map(String)
+}
+
 const EditIcon = {
   render() {
     return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
@@ -262,7 +332,20 @@ const DeleteIcon = {
   }
 }
 
+const CopyIcon = {
+  render() {
+    return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
+      h('rect', { x: '9', y: '9', width: '13', height: '13', rx: '2' }),
+      h('path', { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' }),
+    ])
+  }
+}
+
 const columns = [
+  {
+    type: 'selection',
+    width: 48,
+  },
   {
     title: '名称',
     key: 'name',
@@ -308,6 +391,13 @@ const columns = [
     },
   },
   {
+    title: '下次执行',
+    key: 'next_run_at',
+    width: 170,
+    ellipsis: { tooltip: true },
+    render: (row: Task) => formatDateTime(row.next_run_at),
+  },
+  {
     title: '启用',
     key: 'enabled',
     width: 70,
@@ -320,7 +410,7 @@ const columns = [
   {
     title: '操作',
     key: 'actions',
-    width: 120,
+    width: 160,
     render: (row: Task) => h(NSpace, { size: 'small' }, {
       default: () => [
         h(NTooltip, null, {
@@ -332,6 +422,10 @@ const columns = [
           default: () => '执行',
         }),
         h(NTooltip, null, {
+          trigger: () => h(NButton, { size: 'small', quaternary: true, circle: true, onClick: () => duplicateTask(row) }, { icon: () => h(NIcon, null, { default: () => h(CopyIcon) }) }),
+          default: () => '复制',
+        }),
+        h(NTooltip, null, {
           trigger: () => h(NButton, { size: 'small', quaternary: true, circle: true, type: 'error', onClick: () => deleteTask(row) }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) }),
           default: () => '删除',
         }),
@@ -341,4 +435,19 @@ const columns = [
 ]
 
 onMounted(loadTasks)
+
+watch([searchText, filterType, filterEnabled], () => {
+  if (filterTimer) {
+    window.clearTimeout(filterTimer)
+  }
+  filterTimer = window.setTimeout(() => {
+    loadTasks()
+  }, 250)
+})
+
+onUnmounted(() => {
+  if (filterTimer) {
+    window.clearTimeout(filterTimer)
+  }
+})
 </script>

@@ -1,7 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import fetch from 'node-fetch';
 import { config } from '../config.js';
-import { DatabaseService } from '../database.js';
+import { DatabaseService, TaskRow } from '../database.js';
+import { formatTask, serializeTags } from '../task-utils.js';
 
 function generateShortId(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -223,7 +224,7 @@ For schedule_expression:
 - "weekly": use "weekday time" like "1 09:00" (1=Monday)
 - "monthly": use "day time" like "1 09:00"
 - "cron": use standard cron like "*/5 * * * *"
-- "hourly": leave empty string`,
+- "hourly": use minute only like "0"`,
             },
             {
               role: 'user',
@@ -253,7 +254,7 @@ For schedule_expression:
       const id = generateShortId();
       const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
-      const tags = taskData.tags ? JSON.stringify(taskData.tags) : null;
+      const tags = serializeTags(taskData.tags);
 
       db.run(`
         INSERT INTO tasks (
@@ -278,7 +279,7 @@ For schedule_expression:
         taskData.webhook_url || null,
         taskData.webhook_method || 'POST',
         taskData.webhook_headers ? JSON.stringify(taskData.webhook_headers) : null,
-        taskData.webhook_body ? JSON.stringify(taskData.webhook_body) : null,
+        taskData.webhook_body || null,
         taskData.system_action || null,
         taskData.ai_search_query || null,
         taskData.ai_search_count || 10,
@@ -290,8 +291,12 @@ For schedule_expression:
         taskData.timeout_seconds || 300,
       ]);
 
-      const created = db.querySingle('SELECT * FROM tasks WHERE id = ?', [id]);
-      res.json({ data: created });
+      const created = db.querySingle('SELECT * FROM tasks WHERE id = ?', [id]) as TaskRow | null;
+      if (!created) {
+        throw new Error('Created task could not be loaded');
+      }
+
+      res.json({ data: formatTask(created) });
     } catch (error) {
       if (error instanceof Error) {
         res.status(500).json({ error: 'AI task creation failed', message: error.message });

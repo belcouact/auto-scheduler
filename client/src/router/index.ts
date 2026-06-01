@@ -7,8 +7,13 @@ const router = createRouter({
     {
       path: '/',
       component: Layout,
-      redirect: '/tasks',
+      redirect: '/dashboard',
       children: [
+        {
+          path: 'dashboard',
+          name: 'Dashboard',
+          component: () => import('../views/Dashboard.vue'),
+        },
         {
           path: 'tasks',
           name: 'Tasks',
@@ -28,6 +33,11 @@ const router = createRouter({
           path: 'history',
           name: 'History',
           component: () => import('../views/History.vue'),
+        },
+        {
+          path: 'ai',
+          name: 'AIAssistant',
+          component: () => import('../views/AIAssistant.vue'),
         },
         {
           path: 'settings',

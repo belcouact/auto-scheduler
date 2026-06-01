@@ -1,10 +1,23 @@
 <template>
-  <div>
-    <n-card title="执行历史">
-      <n-space style="margin-bottom: 16px">
-        <n-select v-model:value="filterStatus" placeholder="执行状态" :options="statusOptions" style="width: 150px" @update:value="loadHistory" clearable />
-        <n-button @click="loadHistory">刷新</n-button>
-        <n-button v-if="checkedRowKeys.length > 0" type="error" @click="batchDelete">
+  <div class="history-page">
+    <n-card title="执行历史" :bordered="false" class="history-card">
+      <n-space style="margin-bottom: 16px" wrap>
+        <n-select
+          v-model:value="filterTaskId"
+          placeholder="筛选任务"
+          :options="taskOptions"
+          style="width: 220px"
+          clearable
+        />
+        <n-select
+          v-model:value="filterStatus"
+          placeholder="执行状态"
+          :options="statusOptions"
+          style="width: 150px"
+          clearable
+        />
+        <n-button @click="refreshAll" :loading="loading">刷新</n-button>
+        <n-button v-if="checkedRowKeys.length > 0" type="error" :loading="deleting" @click="batchDelete">
           批量删除 ({{ checkedRowKeys.length }})
         </n-button>
       </n-space>
@@ -20,7 +33,7 @@
       />
     </n-card>
 
-    <n-card title="统计信息" style="margin-top: 16px">
+    <n-card title="统计信息" class="stats-card" :bordered="false">
       <n-grid :cols="4" :x-gap="16">
         <n-gi>
           <n-statistic label="总执行次数" :value="stats.total_executions || 0" />
@@ -44,23 +57,88 @@
         </n-gi>
       </n-grid>
     </n-card>
+
+    <n-drawer v-model:show="drawerVisible" :width="720" placement="right">
+      <n-drawer-content v-if="selectedEntry" :title="selectedEntry.task_name" closable>
+        <template #header-extra>
+          <n-tag :type="statusTagType(selectedEntry.status)" round :bordered="false">
+            {{ statusLabel(selectedEntry.status) }}
+          </n-tag>
+        </template>
+
+        <n-space vertical size="large">
+          <n-card size="small" :bordered="false" class="detail-card">
+            <n-descriptions :column="1" label-placement="left" bordered>
+              <n-descriptions-item label="任务 ID">{{ selectedEntry.task_id }}</n-descriptions-item>
+              <n-descriptions-item label="开始时间">{{ formatTime(selectedEntry.started_at) }}</n-descriptions-item>
+              <n-descriptions-item label="完成时间">{{ formatTime(selectedEntry.completed_at) }}</n-descriptions-item>
+              <n-descriptions-item label="耗时">{{ formatDuration(selectedEntry.duration_ms) }}</n-descriptions-item>
+            </n-descriptions>
+            <n-space style="margin-top: 16px">
+              <n-button tertiary @click="router.push(`/tasks/${selectedEntry.task_id}/edit`)">打开任务</n-button>
+              <n-button tertiary @click="applyTaskFilter(selectedEntry.task_id)">筛选同任务记录</n-button>
+            </n-space>
+          </n-card>
+
+          <n-card v-if="selectedEntry.error_message" title="错误信息" size="small" :bordered="false" class="detail-card">
+            <pre class="detail-block error-block">{{ selectedEntry.error_message }}</pre>
+          </n-card>
+
+          <n-card title="执行输出" size="small" :bordered="false" class="detail-card">
+            <pre class="detail-block">{{ selectedEntry.output || '暂无输出内容' }}</pre>
+          </n-card>
+
+          <n-card title="相关服务器日志" size="small" :bordered="false" class="detail-card">
+            <template #header-extra>
+              <n-button text @click="loadServerLogs">刷新日志</n-button>
+            </template>
+            <div v-if="selectedLogs.length === 0" class="empty-block">未找到相关日志。</div>
+            <pre v-else class="detail-block log-block">{{ selectedLogs.join('\n') }}</pre>
+          </n-card>
+        </n-space>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, h, onMounted } from 'vue'
-import { useMessage, useDialog, NIcon, NStatistic, NGrid, NGi, NCard, NSpace, NSelect, NButton, NDataTable } from 'naive-ui'
-import { historyApi, settingsApi, type HistoryEntry } from '@/api'
-import { popupQueue } from '@/composables/useSSE'
+import { computed, h, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  NButton,
+  NCard,
+  NDataTable,
+  NDescriptions,
+  NDescriptionsItem,
+  NDrawer,
+  NDrawerContent,
+  NGi,
+  NGrid,
+  NIcon,
+  NSelect,
+  NSpace,
+  NStatistic,
+  NTag,
+  useDialog,
+  useMessage,
+} from 'naive-ui'
+import { historyApi, settingsApi, taskApi, type HistoryEntry } from '@/api'
 
+const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+
 const history = ref<HistoryEntry[]>([])
+const tasks = ref<Array<{ id: string; name: string }>>([])
 const loading = ref(false)
+const deleting = ref(false)
 const filterStatus = ref<string | null>(null)
+const filterTaskId = ref<string | null>(null)
 const stats = ref<any>({})
 const checkedRowKeys = ref<string[]>([])
 const serverLogs = ref<any[]>([])
+const drawerVisible = ref(false)
+const selectedEntry = ref<HistoryEntry | null>(null)
 
 const statusOptions = [
   { label: '成功', value: 'success' },
@@ -68,12 +146,21 @@ const statusOptions = [
   { label: '运行中', value: 'running' },
 ]
 
+const taskOptions = computed(() =>
+  tasks.value.map((task) => ({ label: task.name, value: task.id }))
+)
+
+const selectedLogs = computed(() => {
+  if (!selectedEntry.value) return []
+  return getRelatedLogs(selectedEntry.value.task_id, selectedEntry.value.started_at).map(formatLogEntry)
+})
+
 const SuccessIcon = {
   render() {
     return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
       h('polyline', { points: '20 6 9 17 4 12' }),
     ])
-  }
+  },
 }
 
 const ErrorIcon = {
@@ -83,14 +170,15 @@ const ErrorIcon = {
       h('line', { x1: '15', y1: '9', x2: '9', y2: '15' }),
       h('line', { x1: '9', y1: '9', x2: '15', y2: '15' }),
     ])
-  }
+  },
 }
 
 const loadHistory = async () => {
   loading.value = true
   try {
-    const params: any = { limit: 100 }
+    const params: Record<string, string | number> = { limit: 100 }
     if (filterStatus.value) params.status = filterStatus.value
+    if (filterTaskId.value) params.task_id = filterTaskId.value
 
     const result = await historyApi.list(params)
     history.value = result.data
@@ -110,13 +198,26 @@ const loadStats = async () => {
   }
 }
 
+const loadTasks = async () => {
+  try {
+    const result = await taskApi.list()
+    tasks.value = result.data.map((task) => ({ id: task.id, name: task.name }))
+  } catch (error) {
+    console.error('加载任务选项失败', error)
+  }
+}
+
 const loadServerLogs = async () => {
   try {
-    const result = await settingsApi.getLogs(100)
+    const result = await settingsApi.getLogs(150)
     serverLogs.value = result.data
   } catch (error) {
     console.error('加载服务器日志失败', error)
   }
+}
+
+const refreshAll = async () => {
+  await Promise.all([loadHistory(), loadStats(), loadServerLogs(), loadTasks()])
 }
 
 const getRelatedLogs = (taskId: string, startedAt: string) => {
@@ -125,62 +226,27 @@ const getRelatedLogs = (taskId: string, startedAt: string) => {
   const end = start + 60000
   return serverLogs.value.filter((log: any) => {
     if (!log.timestamp) return false
-    const t = new Date(log.timestamp).getTime()
-    return t >= start - 5000 && t <= end + 10000
+    const timestamp = new Date(log.timestamp).getTime()
+    return timestamp >= start - 5000 && timestamp <= end + 10000
   })
 }
 
 const formatLogEntry = (log: any) => {
   if (log.raw) return log.raw
   const level = (log.level || '').toUpperCase()
-  const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ''
+  const timestamp = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ''
   const msg = log.message || ''
-  return `${ts} [${level}] ${msg}`
+  return `${timestamp} [${level}] ${msg}`
 }
 
-const showStatusPopup = (row: HistoryEntry) => {
-  const icon = row.status === 'success' ? '✅' : row.status === 'error' ? '❌' : '⏳'
-  const statusText = row.status === 'success' ? '执行成功' : row.status === 'error' ? '执行失败' : '运行中'
-
-  let content = `状态: ${statusText}\n开始时间: ${formatTime(row.started_at)}\n完成时间: ${formatTime(row.completed_at)}\n耗时: ${formatDuration(row.duration_ms)}`
-
-  const relatedLogs = getRelatedLogs(row.task_id, row.started_at)
-  if (relatedLogs.length > 0) {
-    content += '\n\n--- 服务器日志 ---\n'
-    content += relatedLogs.map(formatLogEntry).join('\n')
-  } else if (serverLogs.value.length > 0) {
-    const last10 = serverLogs.value.slice(-20)
-    content += '\n\n--- 最近服务器日志 (20条) ---\n'
-    content += last10.map(formatLogEntry).join('\n')
-  }
-
-  popupQueue.value.push({
-    type: 'popup',
-    id: `history-status-${row.id}`,
-    title: row.task_name,
-    content,
-    icon,
-    timestamp: row.started_at,
-    taskId: row.task_id,
-    taskName: row.task_name,
-  })
+const openDrawer = (row: HistoryEntry) => {
+  selectedEntry.value = row
+  drawerVisible.value = true
 }
 
-const showDetailPopup = (row: HistoryEntry) => {
-  const icon = row.status === 'success' ? '✅' : row.status === 'error' ? '❌' : '📋'
-  const title = `${row.task_name} - 详细信息`
-  const content = `${row.output ? row.output : ''}${row.error_message ? '\n\n错误信息:\n' + row.error_message : ''}`
-
-  popupQueue.value.push({
-    type: 'popup',
-    id: `history-detail-${row.id}`,
-    title,
-    content: content || '暂无输出内容',
-    icon,
-    timestamp: row.started_at,
-    taskId: row.task_id,
-    taskName: row.task_name,
-  })
+const applyTaskFilter = (taskId: string) => {
+  filterTaskId.value = taskId
+  drawerVisible.value = false
 }
 
 const onCheckedRowKeysChange = (keys: (string | number)[]) => {
@@ -194,14 +260,16 @@ const batchDelete = () => {
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
+      deleting.value = true
       try {
         await historyApi.batchDelete(checkedRowKeys.value)
         message.success(`已删除 ${checkedRowKeys.value.length} 条记录`)
         checkedRowKeys.value = []
-        await loadHistory()
-        await loadStats()
+        await Promise.all([loadHistory(), loadStats()])
       } catch (error) {
         message.error('批量删除失败')
+      } finally {
+        deleting.value = false
       }
     },
   })
@@ -218,17 +286,22 @@ const formatDuration = (ms: number | null | undefined) => {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
-const getStatusTag = (row: HistoryEntry) => {
-  const map: Record<string, { label: string; color: string }> = {
-    success: { label: '成功', color: '#18a058' },
-    error: { label: '失败', color: '#d03050' },
-    running: { label: '运行中', color: '#2080f0' },
+const statusLabel = (status: string) => {
+  const map: Record<string, string> = {
+    success: '成功',
+    error: '失败',
+    running: '运行中',
   }
-  const config = map[row.status] || { label: row.status, color: '#666' }
-  return h('a', {
-    style: `cursor: pointer; color: ${config.color}; text-decoration: none; font-weight: 500`,
-    onClick: () => showStatusPopup(row)
-  }, config.label)
+  return map[status] || status
+}
+
+const statusTagType = (status: string): 'success' | 'error' | 'info' | 'default' => {
+  const map: Record<string, 'success' | 'error' | 'info' | 'default'> = {
+    success: 'success',
+    error: 'error',
+    running: 'info',
+  }
+  return map[status] || 'default'
 }
 
 const columns = [
@@ -239,14 +312,18 @@ const columns = [
   {
     title: '任务名称',
     key: 'task_name',
-    width: 200,
+    width: 220,
     ellipsis: { tooltip: true },
   },
   {
     title: '状态',
     key: 'status',
-    width: 100,
-    render: (row: HistoryEntry) => getStatusTag(row),
+    width: 110,
+    render: (row: HistoryEntry) => h(NTag, {
+      type: statusTagType(row.status),
+      round: true,
+      bordered: false,
+    }, { default: () => statusLabel(row.status) }),
   },
   {
     title: '开始时间',
@@ -271,26 +348,85 @@ const columns = [
     key: 'output',
     ellipsis: { tooltip: true },
     render: (row: HistoryEntry) => {
-      if (row.error_message) {
-        return h('span', { style: 'color: #d03050' }, row.error_message.substring(0, 50) + '...')
-      }
-      return row.output ? row.output.substring(0, 50) + '...' : '-'
+      const text = row.error_message || row.output || '-'
+      const style = row.error_message ? 'color: #d03050' : 'color: #475569'
+      return h('span', { style }, text.length > 60 ? `${text.substring(0, 60)}...` : text)
     },
   },
   {
     title: '操作',
     key: 'actions',
-    width: 100,
-    render: (row: HistoryEntry) => h('a', {
-      style: 'cursor: pointer; color: #2080f0',
-      onClick: () => showDetailPopup(row)
-    }, '详情'),
+    width: 140,
+    render: (row: HistoryEntry) => h(NSpace, { size: 'small' }, {
+      default: () => [
+        h(NButton, {
+          size: 'small',
+          quaternary: true,
+          type: 'primary',
+          onClick: () => openDrawer(row),
+        }, { default: () => '详情' }),
+        h(NButton, {
+          size: 'small',
+          quaternary: true,
+          onClick: () => router.push(`/tasks/${row.task_id}/edit`),
+        }, { default: () => '任务' }),
+      ],
+    }),
   },
 ]
 
-onMounted(() => {
+watch([filterStatus, filterTaskId], () => {
   loadHistory()
-  loadStats()
-  loadServerLogs()
+})
+
+onMounted(() => {
+  refreshAll()
 })
 </script>
+
+<style scoped>
+.history-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.history-card,
+.stats-card {
+  border-radius: 22px;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.06);
+}
+
+.detail-card {
+  border-radius: 18px;
+  background: #f8fafc;
+}
+
+.detail-block {
+  margin: 0;
+  padding: 16px;
+  border-radius: 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.error-block {
+  background: #450a0a;
+  color: #fecaca;
+}
+
+.log-block {
+  background: #111827;
+}
+
+.empty-block {
+  padding: 12px 4px;
+  color: #64748b;
+}
+</style>

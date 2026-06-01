@@ -60,6 +60,28 @@ export class Server {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
+    this.app.get('/api/status', (_req: Request, res: Response) => {
+      const totals = this.db.querySingle(`
+        SELECT
+          COUNT(*) as total_tasks,
+          SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_tasks,
+          SUM(CASE WHEN last_run_status = 'error' THEN 1 ELSE 0 END) as failed_tasks
+        FROM tasks
+      `) as { total_tasks: number; enabled_tasks: number; failed_tasks: number } | null;
+
+      res.json({
+        data: {
+          server: 'online',
+          timestamp: new Date().toISOString(),
+          clients: sseManager.getClientCount(),
+          scheduledTasks: this.scheduler.getScheduledTaskCount(),
+          totalTasks: totals?.total_tasks || 0,
+          enabledTasks: totals?.enabled_tasks || 0,
+          failedTasks: totals?.failed_tasks || 0,
+        },
+      });
+    });
+
     this.app.get('/api/events', (req: Request, res: Response, next: NextFunction) => {
       sseManager.addClient(req, res, next);
     });

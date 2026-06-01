@@ -8,6 +8,7 @@ import * as path from 'path';
 import { DatabaseService, TaskRow } from './database.js';
 import { sseManager } from './sse.js';
 import logger from './logger.js';
+import { calculateNextRun, getCronExpression, parseLocalDateTime } from './schedule-utils.js';
 
 const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -19,6 +20,7 @@ interface ScheduledTask {
 export class SchedulerService {
   private db: DatabaseService;
   private scheduledTasks: Map<string, ScheduledTask> = new Map();
+  private pendingRetries: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(db: DatabaseService) {
     this.db = db;
@@ -26,6 +28,8 @@ export class SchedulerService {
 
   async start() {
     logger.info(`Using local timezone: ${localTimezone}`);
+    this.clearPendingRetries();
+    this.db.run('UPDATE tasks SET next_run_at = NULL');
     const tasks = this.db.getDb().prepare(`
       SELECT * FROM tasks WHERE enabled = 1
     `).all() as TaskRow[];
@@ -42,6 +46,8 @@ export class SchedulerService {
       task.stop();
     }
     this.scheduledTasks.clear();
+    this.clearPendingRetries();
+    this.db.run('UPDATE tasks SET next_run_at = NULL WHERE enabled = 0');
 
     const tasks = this.db.getDb().prepare(`
       SELECT * FROM tasks WHERE enabled = 1
@@ -55,30 +61,21 @@ export class SchedulerService {
   }
 
   private scheduleTask(task: TaskRow) {
-    let cronExpression: string;
+    const nextRunAt = calculateNextRun(task);
+    this.updateNextRun(task.id, nextRunAt);
+
+    let cronExpression: string | null;
 
     switch (task.schedule_type) {
       case 'once':
         this.scheduleOnce(task);
         return;
-      case 'cron':
-        cronExpression = task.schedule_expression;
-        break;
-      case 'daily':
-        cronExpression = this.parseDaily(task.schedule_expression);
-        break;
-      case 'weekly':
-        cronExpression = this.parseWeekly(task.schedule_expression);
-        break;
-      case 'monthly':
-        cronExpression = this.parseMonthly(task.schedule_expression);
-        break;
-      case 'hourly':
-        cronExpression = this.parseHourly(task.schedule_expression);
-        break;
       default:
-        logger.warn(`Unknown schedule type: ${task.schedule_type}`);
-        return;
+        cronExpression = getCronExpression(task);
+        if (!cronExpression) {
+          logger.warn(`Unknown schedule type: ${task.schedule_type}`);
+          return;
+        }
     }
 
     try {
@@ -98,15 +95,12 @@ export class SchedulerService {
   }
 
   private scheduleOnce(task: TaskRow) {
-    const [dateStr, timeStr] = task.schedule_expression.split(' ');
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const [hour, minute, second] = timeStr.split(':').map(Number);
-
-    const runTime = new Date(year, month - 1, day, hour, minute, second || 0);
+    const runTime = parseLocalDateTime(task.schedule_expression);
     const now = new Date();
 
-    if (runTime <= now) {
+    if (!runTime || runTime <= now) {
       logger.warn(`Task ${task.name} has a past run time: ${task.schedule_expression}`);
+      this.updateNextRun(task.id, null);
       return;
     }
 
@@ -124,39 +118,8 @@ export class SchedulerService {
     logger.info(`One-time task "${task.name}" scheduled for ${runTime.toLocaleString()} (${localTimezone})`);
   }
 
-  private parseDaily(expression: string): string {
-    const time = expression.split(' ');
-    if (time.length === 2) {
-      return `${time[1]} ${time[0]} * * *`;
-    }
-    return '0 9 * * *';
-  }
-
-  private parseWeekly(expression: string): string {
-    const parts = expression.split(' ');
-    if (parts.length >= 3) {
-      return `${parts[2]} ${parts[1]} ${parts[0]} * *`;
-    }
-    return '0 9 * * 1';
-  }
-
-  private parseMonthly(expression: string): string {
-    const parts = expression.split(' ');
-    if (parts.length >= 3) {
-      return `${parts[2]} ${parts[1]} * ${parts[0]} *`;
-    }
-    return '0 9 1 * *';
-  }
-
-  private parseHourly(expression: string): string {
-    const minute = parseInt(expression, 10);
-    if (!isNaN(minute) && minute >= 0 && minute <= 59) {
-      return `${minute} * * * *`;
-    }
-    return '0 * * * *';
-  }
-
   async executeTask(task: TaskRow) {
+    this.clearRetry(task.id);
     const historyId = randomUUID();
     const startedAt = new Date().toISOString();
 
@@ -190,6 +153,9 @@ export class SchedulerService {
 
       const completedAt = new Date().toISOString();
       const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+      const nextRunAt = task.schedule_type === 'once'
+        ? null
+        : calculateNextRun(task, new Date(completedAt));
 
       this.db.getDb().prepare(`
         UPDATE execution_history 
@@ -199,21 +165,50 @@ export class SchedulerService {
 
       this.db.getDb().prepare(`
         UPDATE tasks 
-        SET last_run_at = ?, last_run_status = 'success', retry_count = 0
+        SET last_run_at = ?, last_run_status = 'success', retry_count = 0, next_run_at = ?, enabled = ?
         WHERE id = ?
-      `).run(completedAt, task.id);
+      `).run(completedAt, nextRunAt, task.schedule_type === 'once' ? 0 : 1, task.id);
 
       logger.info(`Task "${task.name}" completed successfully`);
     } catch (error) {
       const completedAt = new Date().toISOString();
       const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const latestTask = this.db.querySingle('SELECT * FROM tasks WHERE id = ?', [task.id]) as TaskRow | null;
+      const currentRetryCount = latestTask?.retry_count ?? task.retry_count ?? 0;
+      const maxRetries = latestTask?.max_retries ?? task.max_retries;
+      const hasRetryRemaining = currentRetryCount < maxRetries;
 
       this.db.getDb().prepare(`
         UPDATE execution_history 
         SET status = 'error', error_message = ?, completed_at = ?, duration_ms = ?
         WHERE id = ?
       `).run(errorMessage, completedAt, durationMs, historyId);
+
+      if (hasRetryRemaining) {
+        const nextRetryCount = currentRetryCount + 1;
+        const retryDelaySeconds = Math.min(300, nextRetryCount * 30);
+        const retryAt = new Date(Date.now() + retryDelaySeconds * 1000).toISOString();
+
+        this.db.getDb().prepare(`
+          UPDATE tasks
+          SET last_run_at = ?, last_run_status = 'error', retry_count = ?, next_run_at = ?
+          WHERE id = ?
+        `).run(completedAt, nextRetryCount, retryAt, task.id);
+
+        this.scheduleRetry(task.id, retryDelaySeconds * 1000);
+        logger.warn(`Task "${task.name}" failed. Retrying in ${retryDelaySeconds}s (${nextRetryCount}/${maxRetries})`);
+      } else {
+        const nextRunAt = task.schedule_type === 'once'
+          ? null
+          : calculateNextRun(task, new Date(completedAt));
+
+        this.db.getDb().prepare(`
+          UPDATE tasks
+          SET last_run_at = ?, last_run_status = 'error', next_run_at = ?, enabled = ?
+          WHERE id = ?
+        `).run(completedAt, nextRunAt, task.schedule_type === 'once' ? 0 : 1, task.id);
+      }
 
       logger.error(`Task "${task.name}" failed: ${errorMessage}`);
     }
@@ -680,6 +675,7 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
       this.scheduledTasks.delete(taskId);
       logger.info(`Removed scheduled task: ${taskId}`);
     }
+    this.clearRetry(taskId);
   }
 
   stop() {
@@ -687,6 +683,46 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
       task.stop();
     }
     this.scheduledTasks.clear();
+    this.clearPendingRetries();
     logger.info('All scheduled tasks stopped');
+  }
+
+  getScheduledTaskCount(): number {
+    return this.scheduledTasks.size;
+  }
+
+  private updateNextRun(taskId: string, nextRunAt: string | null) {
+    this.db.run('UPDATE tasks SET next_run_at = ? WHERE id = ?', [nextRunAt, taskId]);
+  }
+
+  private scheduleRetry(taskId: string, delayMs: number) {
+    this.clearRetry(taskId);
+    const timeout = setTimeout(async () => {
+      this.pendingRetries.delete(taskId);
+      const latestTask = this.db.querySingle('SELECT * FROM tasks WHERE id = ?', [taskId]) as TaskRow | null;
+      if (!latestTask || !latestTask.enabled) {
+        return;
+      }
+
+      logger.info(`Retrying task: ${latestTask.name} (${latestTask.id})`);
+      await this.executeTask(latestTask);
+    }, delayMs);
+
+    this.pendingRetries.set(taskId, timeout);
+  }
+
+  private clearRetry(taskId: string) {
+    const pendingRetry = this.pendingRetries.get(taskId);
+    if (pendingRetry) {
+      clearTimeout(pendingRetry);
+      this.pendingRetries.delete(taskId);
+    }
+  }
+
+  private clearPendingRetries() {
+    for (const [, timeout] of this.pendingRetries) {
+      clearTimeout(timeout);
+    }
+    this.pendingRetries.clear();
   }
 }
