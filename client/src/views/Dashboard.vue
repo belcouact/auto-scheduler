@@ -11,7 +11,6 @@
       </div>
       <n-space>
         <n-button type="primary" size="large" @click="router.push('/tasks/new')">Create Task</n-button>
-        <n-button size="large" tertiary @click="router.push('/ai')">Open AI Assistant</n-button>
       </n-space>
     </section>
 
@@ -238,7 +237,7 @@ onMounted(refreshAll)
   display: flex;
   justify-content: space-between;
   gap: 24px;
-  align-items: flex-end;
+  align-items: center;
   padding: 28px 30px;
   border-radius: 24px;
   background:

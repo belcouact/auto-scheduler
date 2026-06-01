@@ -120,6 +120,68 @@ export const aiApi = {
   chat: (messages: Array<{ role: string; content: string }>, model?: string) =>
     apiClient.post<{ data: { role: string; content: string } }>('/ai/chat', { messages, model }).then(r => r.data.data),
 
+  chatStream: (
+    messages: Array<{ role: string; content: string }>,
+    onChunk: (delta: string, fullContent: string) => void,
+    model?: string,
+    enableWebSearch?: boolean
+  ): Promise<string> => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const response = await fetch('/api/ai/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages, model, enable_web_search: enableWebSearch }),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          reject(new Error(`Stream error: ${response.status} - ${text}`));
+          return;
+        }
+
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullContent = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const jsonStr = line.slice(6);
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.error) {
+                reject(new Error(data.error));
+                return;
+              }
+              if (data.done) {
+                resolve(data.fullContent || fullContent);
+                return;
+              }
+              if (data.content) {
+                fullContent += data.content;
+                onChunk(data.content, fullContent);
+              }
+            } catch {
+              // skip malformed chunks
+            }
+          }
+        }
+        resolve(fullContent);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  },
+
   suggestTasks: (context: string) =>
     apiClient.post<{ data: { role: string; content: string } }>('/ai/suggest-tasks', { context }).then(r => r.data.data),
 

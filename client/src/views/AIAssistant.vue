@@ -2,42 +2,30 @@
   <div class="ai-assistant">
     <n-grid :cols="24" :x-gap="16" :y-gap="16">
       <n-grid-item :span="24">
-        <n-card :bordered="false" class="welcome-card">
-          <div class="welcome-content">
-            <div class="welcome-icon">
-              <n-icon size="48" color="#18a058">
-                <SparkleIcon />
-              </n-icon>
-            </div>
-            <h2>AI 智能助手</h2>
-            <p>描述您想要自动化的任务，AI 将为您生成任务配置或提供建议</p>
-          </div>
-          <div class="quick-actions">
-            <n-button size="large" @click="quickAction('每天定时提醒我喝水')">
-              <template #icon><n-icon><WaterIcon /></n-icon></template>
-              定时提醒
-            </n-button>
-            <n-button size="large" @click="quickAction('每天早上9点自动备份数据库')">
-              <template #icon><n-icon><DatabaseIcon /></n-icon></template>
-              自动备份
-            </n-button>
-            <n-button size="large" @click="quickAction('监控服务器状态，异常时发送通知')">
-              <template #icon><n-icon><MonitorIcon /></n-icon></template>
-              系统监控
-            </n-button>
-            <n-button size="large" @click="quickAction('每周生成工作报告并发送邮件')">
-              <template #icon><n-icon><MailIcon /></n-icon></template>
-              报告生成
-            </n-button>
-          </div>
-        </n-card>
-      </n-grid-item>
-
-      <n-grid-item :span="24">
         <n-card :bordered="false" class="chat-card">
           <template #header>
             <div class="chat-header">
-              <span>对话</span>
+              <div class="chat-header-left">
+                <span>对话</span>
+                <div class="quick-actions">
+                  <n-button size="small" @click="quickAction('每天定时提醒我喝水')">
+                    <template #icon><n-icon><WaterIcon /></n-icon></template>
+                    定时提醒
+                  </n-button>
+                  <n-button size="small" @click="quickAction('每天早上9点自动备份数据库')">
+                    <template #icon><n-icon><DatabaseIcon /></n-icon></template>
+                    自动备份
+                  </n-button>
+                  <n-button size="small" @click="quickAction('监控服务器状态，异常时发送通知')">
+                    <template #icon><n-icon><MonitorIcon /></n-icon></template>
+                    系统监控
+                  </n-button>
+                  <n-button size="small" @click="quickAction('每周生成工作报告并发送邮件')">
+                    <template #icon><n-icon><MailIcon /></n-icon></template>
+                    报告生成
+                  </n-button>
+                </div>
+              </div>
               <n-button quaternary circle size="small" @click="clearChat">
                 <template #icon><n-icon><TrashIcon /></n-icon></template>
               </n-button>
@@ -114,6 +102,19 @@
           </div>
 
           <div class="input-area">
+            <div class="input-toolbar">
+              <div class="search-toggle">
+                <n-switch
+                  v-model:value="webSearchEnabled"
+                  :loading="isSearching"
+                  size="small"
+                />
+                <span class="search-toggle-label" :class="{ active: webSearchEnabled }">
+                  <n-icon size="14"><SearchIcon /></n-icon>
+                  联网搜索
+                </span>
+              </div>
+            </div>
             <div class="input-row">
               <n-input
                 v-model:value="userInput"
@@ -147,7 +148,7 @@
 
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
-import { useMessage, NCard, NSpace, NButton, NInput, NTag, NIcon, NAvatar, NDivider, NGrid, NGridItem } from 'naive-ui'
+import { useMessage, NCard, NSpace, NButton, NInput, NTag, NIcon, NAvatar, NDivider, NGrid, NGridItem, NSwitch } from 'naive-ui'
 import { marked } from 'marked'
 import { aiApi, taskApi } from '@/api'
 import {
@@ -161,6 +162,7 @@ import {
   User as PersonIcon,
   Send as SendIcon,
   Plus as PlusIcon,
+  Search as SearchIcon,
 } from '@lucide/vue'
 
 marked.setOptions({
@@ -172,6 +174,8 @@ const message = useMessage()
 const messages = ref<Array<{ role: string; content: string; timestamp?: Date; tasks?: any[] }>>([])
 const userInput = ref('')
 const isLoading = ref(false)
+const webSearchEnabled = ref(false)
+const isSearching = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
 const existingTasks = ref<any[]>([])
 
@@ -334,12 +338,9 @@ const getDefaultScheduleExpression = (scheduleType: string): string => {
 const sendMessage = async () => {
   if (!userInput.value.trim() || isLoading.value) return
 
-  await loadExistingTasks()
-  const userContent = userInput.value + getExistingTasksContext()
-  
   const userMessage = {
     role: 'user',
-    content: userContent,
+    content: userInput.value,
     timestamp: new Date(),
   }
   messages.value.push(userMessage)
@@ -348,20 +349,42 @@ const sendMessage = async () => {
   await scrollToBottom()
 
   try {
-    const response = await aiApi.chat(messages.value.map(m => ({ role: m.role, content: m.content })))
-    
+    await loadExistingTasks()
+    const existingTasksContext = getExistingTasksContext()
+    const apiMessages = messages.value.map(m => ({ role: m.role, content: m.content }))
+    if (existingTasksContext) {
+      apiMessages.unshift({ role: 'system', content: existingTasksContext })
+    }
+
+    const assistantIndex = messages.value.length
+    messages.value.push({
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    })
+
+    const fullContent = await aiApi.chatStream(
+      apiMessages,
+      (_delta: string, fullContent: string) => {
+        messages.value[assistantIndex].content = fullContent
+        scrollToBottom()
+      },
+      undefined,
+      webSearchEnabled.value
+    )
+
     let tasks: any[] = []
     try {
-      const jsonMatch = response.content.match(/```json\s*([\s\S]*?)\s*```/)
+      const jsonMatch = fullContent.match(/```json\s*([\s\S]*?)\s*```/)
       if (jsonMatch) {
         tasks = JSON.parse(jsonMatch[1])
       } else {
-        const bracketMatch = response.content.match(/\[[\s\S]*\]/)
+        const bracketMatch = fullContent.match(/\[[\s\S]*\]/)
         if (bracketMatch) {
           tasks = JSON.parse(bracketMatch[0])
         }
       }
-      
+
       tasks = tasks.filter((t: any) => t.name && t.description && t.type && t.schedule_type).map((t: any) => ({
         name: t.name,
         description: t.description,
@@ -382,15 +405,10 @@ const sendMessage = async () => {
       console.log('No task suggestions found or invalid JSON')
     }
 
-    messages.value.push({
-      role: 'assistant',
-      content: response.content,
-      timestamp: new Date(),
-      tasks: tasks.length > 0 ? tasks : undefined,
-    })
+    messages.value[assistantIndex].tasks = tasks.length > 0 ? tasks : undefined
     await scrollToBottom()
   } catch (error: any) {
-    message.error(error.response?.data?.message || 'AI请求失败')
+    message.error(error.response?.data?.message || error.message || 'AI请求失败')
   } finally {
     isLoading.value = false
   }
@@ -449,8 +467,8 @@ onMounted(async () => {
 .chat-card {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 280px);
-  min-height: 500px;
+  height: calc(100vh - 60px);
+  min-height: 800px;
 }
 
 .chat-header {
@@ -458,6 +476,34 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
   width: 100%;
+  gap: 12px;
+}
+
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-header-left > span {
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.chat-header-left .quick-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-header-left .quick-actions :deep(.n-button) {
+  height: 28px;
+  font-size: 12px;
+  padding: 0 10px;
 }
 
 .chat-container {
@@ -687,6 +733,33 @@ onMounted(async () => {
 .input-area {
   display: flex;
   flex-direction: column;
+}
+
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 6px 4px 8px;
+}
+
+.search-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.search-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #999;
+  transition: color 0.2s;
+}
+
+.search-toggle-label.active {
+  color: #18a058;
 }
 
 .input-row {

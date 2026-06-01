@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import fetch from 'node-fetch';
+import { getJson } from 'serpapi';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -349,44 +350,67 @@ export class SchedulerService {
       throw new Error('AI API not configured. Please configure AI API URL and API key in settings.');
     }
 
-    const searchCount = task.ai_search_count || 10;
     const searchQuery = task.ai_search_query;
+    const searchCount = task.ai_search_count || 10;
 
-    const searchPrompt = `You are a web search assistant. Based on the user's query, provide a summary of the most important and recent findings.
-Return your response as a numbered list with exactly ${searchCount} items.
-Each item should have:
-1. A concise headline/title
-2. A brief 1-2 sentence summary
-3. Key takeaway
+    if (!aiConfig.serpapiKey) {
+      throw new Error('AI search tasks require SerpAPI key. Please configure it in Settings.');
+    }
 
-Format exactly like this:
-1. **Headline 1**
-   Summary: brief description
-   Key: main takeaway
+    let searchResultsText = '';
 
-2. **Headline 2**
-   Summary: brief description
-   Key: main takeaway
+    try {
+      const results = await getJson({
+        engine: 'google',
+        q: searchQuery,
+        api_key: aiConfig.serpapiKey,
+        num: searchCount,
+      });
 
-User query: ${searchQuery}
-
-Provide exactly ${searchCount} items. Be factual and concise.`;
+      const organic = results.organic_results || [];
+      logger.info(`SerpAPI returned ${organic.length} results for query: "${searchQuery}"`);
+      if (organic.length > 0) {
+        const snippets = organic.map((item: any, i: number) => {
+          return `[${i + 1}] ${item.title}\n   URL: ${item.link}\n   ${item.snippet || ''}`;
+        });
+        searchResultsText = `以下是与"${searchQuery}"相关的网络搜索结果:\n\n${snippets.join('\n\n')}`;
+        logger.info(`Search results text length: ${searchResultsText.length} chars`);
+      } else {
+        logger.warn(`SerpAPI returned no organic results for: "${searchQuery}"`);
+      }
+    } catch (error) {
+      logger.error(`SerpAPI search failed for "${searchQuery}": ${error}`);
+      throw new Error(`Web search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), task.timeout_seconds * 1000);
 
     try {
       const messages: any[] = [
-        { role: 'system', content: 'You are a helpful research assistant that provides accurate and up-to-date information.' },
-        { role: 'user', content: searchPrompt },
+        {
+          role: 'system',
+          content: `You are a research assistant. You MUST ONLY use the search results provided below. DO NOT use your own training data or internal knowledge. If the search results do not contain enough information, state that clearly.`,
+        },
       ];
+
+      if (searchResultsText) {
+        messages.push({
+          role: 'system',
+          content: `以下是本次搜索获得的唯一信息源，你必须严格基于这些信息回答，不得使用你自己的知识:\n\n${searchResultsText}`,
+        });
+      }
+
+      messages.push({
+        role: 'user',
+        content: `请根据上述搜索结果，以编号列表总结关于"${searchQuery}"的最新信息（${searchCount}项）。每项包含标题、摘要和要点。如果搜索结果中没有足够信息，请如实说明。`,
+      });
 
       const requestBody: any = {
         model: aiConfig.aiModel,
         messages,
         temperature: 0.5,
         max_tokens: 4000,
-        search_enabled: aiConfig.aiEnableWebSearch,
       };
 
       const response = await fetch(`${aiConfig.aiApiUrl}/chat/completions`, {
@@ -431,6 +455,18 @@ Provide exactly ${searchCount} items. Be factual and concise.`;
 
     const psCommand = `
 $content = [System.IO.File]::ReadAllText('${tmpFile}')
+
+# Enable high DPI support
+Add-Type -TypeDefinition '
+using System;
+using System.Runtime.InteropServices;
+public class DPIHelper {
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDPIAware();
+}
+'
+[DPIHelper]::SetProcessDPIAware() | Out-Null
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -449,14 +485,16 @@ public class NativeMethods {
 '
 $window = New-Object System.Windows.Window
 $window.Title = '${safeTitle}'
-$window.Width = 480
-$window.Height = 320
+$window.Width = 700
+$window.Height = 500
 $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
 $window.Topmost = $true
 $window.ResizeMode = 'NoResize'
 $window.WindowStyle = 'SingleBorderWindow'
 $window.Background = [System.Windows.Media.Brushes]::White
 $window.AllowsTransparency = $false
+$window.UseLayoutRounding = $true
+$window.TextOptions.SetTextFormattingMode($window, 'Display')
 
 $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
 $DWMWA_WINDOW_CORNER_PREFERENCE = 33
@@ -479,7 +517,7 @@ $grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
 $topBar = New-Object System.Windows.Controls.StackPanel
 $topBar.Orientation = 'Horizontal'
 $topBar.HorizontalAlignment = 'Center'
-$topBar.Margin = New-Object System.Windows.Thickness(0, 20, 0, 0)
+$topBar.Margin = New-Object System.Windows.Thickness(0, 30, 0, 0)
 [System.Windows.Controls.Grid]::SetRow($topBar, 0)
 $grid.Children.Add($topBar) | Out-Null
 
@@ -536,11 +574,12 @@ $grid.Children.Add($msgScroll) | Out-Null
 
 $msgText = New-Object System.Windows.Controls.TextBlock
 $msgText.Text = $content
-$msgText.FontSize = 15
+$msgText.FontSize = 18
 $msgText.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe UI Emoji, Microsoft YaHei')
 $msgText.Foreground = [System.Windows.Media.Brushes]::FromRgb(31, 41, 55)
 $msgText.TextAlignment = 'Center'
 $msgText.TextWrapping = 'Wrap'
+[System.Windows.Controls.TextOptions]::SetTextRenderingMode($msgText, 'ClearType')
 $msgScroll.Content = $msgText
 
 $btnPanel = New-Object System.Windows.Controls.StackPanel
@@ -554,7 +593,7 @@ $btn = New-Object System.Windows.Controls.Button
 $btn.Content = '  ✨ 确定 ✨  '
 $btn.Width = 140
 $btn.Height = 42
-$btn.FontSize = 15
+$btn.FontSize = 18
 $btn.FontFamily = New-Object System.Windows.Media.FontFamily('Microsoft YaHei')
 $btn.HorizontalAlignment = 'Center'
 $btn.Foreground = [System.Windows.Media.Brushes]::White
@@ -651,8 +690,22 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
 
     const psCommand = `
 $content = [System.IO.File]::ReadAllText('${tmpFile}')
+
+# Enable high DPI support + visual styles
+Add-Type -TypeDefinition '
+using System;
+using System.Runtime.InteropServices;
+public class DPIHelper {
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDPIAware();
+}
+'
+[DPIHelper]::SetProcessDPIAware() | Out-Null
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
 Add-Type -TypeDefinition '
 using System;
 using System.Runtime.InteropServices;
@@ -663,70 +716,56 @@ public class NativeMethods {
 '
 $form = New-Object System.Windows.Forms.Form
 $form.Text = '${title.replace(/'/g, "''")}'
-$form.Size = New-Object System.Drawing.Size(600, 500)
+$form.ClientSize = New-Object System.Drawing.Size(1200, 900)
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 $form.TopMost = $true
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
-$form.MaximizeBox = $false
 $form.MinimizeBox = $false
-$form.ControlBox = $true
+$form.MaximizeBox = $false
 $form.BackColor = [System.Drawing.Color]::White
-$form.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
 
-$mainPanel = New-Object System.Windows.Forms.Panel
-$mainPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-$mainPanel.Padding = New-Object System.Windows.Forms.Padding(15)
-$form.Controls.Add($mainPanel)
+$layoutTable = New-Object System.Windows.Forms.TableLayoutPanel
+$layoutTable.Dock = [System.Windows.Forms.DockStyle]::Fill
+$layoutTable.ColumnCount = 1
+$layoutTable.RowCount = 2
+$layoutTable.RowStyles.Clear()
+$layoutTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80)))
+$layoutTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$layoutTable.Padding = New-Object System.Windows.Forms.Padding(15)
+$form.Controls.Add($layoutTable)
 
 $iconLabel = New-Object System.Windows.Forms.Label
 $iconLabel.Text = '${icon.replace(/'/g, "''")}'
-$iconLabel.Font = New-Object System.Drawing.Font('Microsoft YaHei', 24)
+$iconLabel.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 36)
 $iconLabel.ForeColor = [System.Drawing.Color]::FromArgb(24, 144, 255)
 $iconLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$iconLabel.Dock = [System.Windows.Forms.DockStyle]::Top
-$iconLabel.Height = 50
-$mainPanel.Controls.Add($iconLabel)
+$iconLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+$layoutTable.Controls.Add($iconLabel, 0, 0)
 
 $textBox = New-Object System.Windows.Forms.RichTextBox
 $textBox.Text = $content
-$textBox.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9.5)
+$textBox.Font = New-Object System.Drawing.Font('Microsoft YaHei', 11, [System.Drawing.FontStyle]::Regular)
 $textBox.ReadOnly = $true
 $textBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
 $textBox.BackColor = [System.Drawing.Color]::White
 $textBox.Dock = [System.Windows.Forms.DockStyle]::Fill
 $textBox.ScrollBars = [System.Windows.Forms.RichTextBoxScrollBars]::Vertical
-$mainPanel.Controls.Add($textBox)
+$layoutTable.Controls.Add($textBox, 0, 1)
 
-$btn = New-Object System.Windows.Forms.Button
-$btn.Text = '  关闭  '
-$btn.Size = New-Object System.Drawing.Size(100, 32)
-$btn.DialogResult = [System.Windows.Forms.DialogResult]::OK
-$btn.BackColor = [System.Drawing.Color]::FromArgb(24, 144, 255)
-$btn.ForeColor = [System.Drawing.Color]::White
-$btn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-$btn.FlatAppearance.BorderSize = 0
-$btn.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10)
-$btn.Anchor = 'Bottom'
-$form.Controls.Add($btn)
-Add-Member -InputObject $btn -MemberType ScriptMethod -Name SetBoundsCore -Value {
-  param($x, $y, $width, $height, $specified)
-  $y = $form.ClientSize.Height - $height - 15
-  $x = ($form.ClientSize.Width - $width) / 2
-  [System.Windows.Forms.Control].GetMethod('SetBoundsCore', [System.Reflection.BindingFlags]'NonPublic, Instance').Invoke($this, @($x, $y, $width, $height, $specified))
-} -Force
-
-$form.Add_Shown({ [NativeMethods]::SetForegroundWindow($form.Handle) })
-$result = $form.ShowDialog()
+$form.Add_Shown({ $form.Activate(); [NativeMethods]::SetForegroundWindow($form.Handle) })
+$form.KeyPreview = $true
+$form.Add_KeyDown({ if ($_.KeyCode -eq 'Escape') { $form.Close() } })
+$textBox.Add_DoubleClick({ $form.Close() })
+[System.Windows.Forms.Application]::Run($form)
 Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
 `;
 
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('powershell.exe', [
         '-NoProfile',
-        '-NonInteractive',
+        '-WindowStyle', 'Normal',
         '-Command', psCommand,
       ], {
-        timeout: 60000,
+        timeout: 120000,
       });
 
       let stderr = '';
@@ -749,8 +788,8 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
 
   private async getAiConfig() {
     const rows = await this.db.queryAll(
-      'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?)',
-      ['ai_api_url', 'ai_api_key', 'ai_model', 'ai_enable_web_search']
+      'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?)',
+      ['ai_api_url', 'ai_api_key', 'ai_model', 'ai_enable_web_search', 'serpapi_key']
     ) as { key: string; value: string }[];
 
     const configMap: Record<string, string> = {};
@@ -763,6 +802,7 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
       aiApiKey: configMap.ai_api_key || '',
       aiModel: configMap.ai_model || 'deepseek-v4-pro',
       aiEnableWebSearch: configMap.ai_enable_web_search === 'true' || configMap.ai_enable_web_search === '1',
+      serpapiKey: configMap.serpapi_key || '',
     };
   }
 

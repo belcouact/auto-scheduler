@@ -16,8 +16,8 @@
             <n-select v-if="aiModelOptions.length > 0" v-model:value="aiSettings.ai_model" :options="aiModelOptions" placeholder="选择模型" />
             <n-input v-else v-model:value="aiSettings.ai_model" placeholder="输入模型名称, 如: gpt-4o-mini" />
           </n-form-item>
-          <n-form-item label="联网搜索">
-            <n-switch v-model:value="webSearchEnabled" @update:value="(v) => aiSettings.ai_enable_web_search = v ? 'true' : 'false'" />
+          <n-form-item label="SerpAPI 密钥">
+            <n-input v-model:value="aiSettings.serpapi_key" type="password" placeholder="SerpAPI key for web search" show-password-on="click" />
           </n-form-item>
           <n-form-item>
             <n-button type="primary" @click="saveAISettings" :loading="saving">保存AI配置</n-button>
@@ -87,10 +87,8 @@ const aiSettings = ref({
   ai_api_url: '',
   ai_api_key: '',
   ai_model: 'deepseek-v4-pro',
-  ai_enable_web_search: 'true',
+  serpapi_key: '',
 })
-
-const webSearchEnabled = ref(true)
 
 const selectedProvider = ref('openai')
 
@@ -186,10 +184,7 @@ const loadSettings = async () => {
     if (result.data.ai_api_url) aiSettings.value.ai_api_url = result.data.ai_api_url
     if (result.data.ai_api_key) aiSettings.value.ai_api_key = result.data.ai_api_key
     if (result.data.ai_model) aiSettings.value.ai_model = result.data.ai_model
-    if (result.data.ai_enable_web_search !== undefined) {
-      webSearchEnabled.value = result.data.ai_enable_web_search === 'true' || result.data.ai_enable_web_search === '1'
-      aiSettings.value.ai_enable_web_search = result.data.ai_enable_web_search || 'true'
-    }
+    if (result.data.serpapi_key) aiSettings.value.serpapi_key = result.data.serpapi_key
     if (result.data.notification_sound) notificationSound.value = result.data.notification_sound === 'true'
     detectProvider(true)
     

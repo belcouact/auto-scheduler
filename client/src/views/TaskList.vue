@@ -27,6 +27,9 @@
         <n-select v-model:value="filterEnabled" placeholder="状态" :options="statusOptions" style="width: 120px" clearable />
         <n-button v-if="checkedRowKeys.length > 0" :loading="bulkLoading" @click="batchSetEnabled(true)">批量启用</n-button>
         <n-button v-if="checkedRowKeys.length > 0" :loading="bulkLoading" @click="batchSetEnabled(false)">批量禁用</n-button>
+        <n-button v-if="checkedRowKeys.length > 0" :loading="bulkLoading" @click="batchDuplicateTasks">
+          批量复制 ({{ checkedRowKeys.length }})
+        </n-button>
         <n-button v-if="checkedRowKeys.length > 0" type="error" :loading="bulkLoading" @click="batchDeleteTasks">
           批量删除 ({{ checkedRowKeys.length }})
         </n-button>
@@ -179,34 +182,6 @@ const executeTask = async (task: Task) => {
   }
 }
 
-const duplicateTask = async (task: Task) => {
-  try {
-    await taskApi.duplicate(task.id)
-    message.success('任务已复制为草稿')
-    await loadTasks()
-  } catch (error) {
-    message.error('复制失败')
-  }
-}
-
-const deleteTask = (task: Task) => {
-  dialog.warning({
-    title: '确认删除',
-    content: `确定要删除任务"${task.name}"吗？`,
-    positiveText: '删除',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        await taskApi.delete(task.id)
-        message.success('任务已删除')
-        await loadTasks()
-      } catch (error) {
-        message.error('删除失败')
-      }
-    },
-  })
-}
-
 const batchSetEnabled = async (enabled: boolean) => {
   if (checkedRowKeys.value.length === 0) return
 
@@ -245,6 +220,22 @@ const batchDeleteTasks = () => {
       }
     },
   })
+}
+
+const batchDuplicateTasks = async () => {
+  if (checkedRowKeys.value.length === 0) return
+  bulkLoading.value = true
+  try {
+    const results = await Promise.allSettled(checkedRowKeys.value.map(id => taskApi.duplicate(id)))
+    const successCount = results.filter(r => r.status === 'fulfilled').length
+    message.success(`成功复制 ${successCount}/${checkedRowKeys.value.length} 个任务`)
+    checkedRowKeys.value = []
+    await loadTasks()
+  } catch (error) {
+    message.error('批量复制失败')
+  } finally {
+    bulkLoading.value = false
+  }
 }
 
 const aiCreateTask = async () => {
@@ -326,24 +317,6 @@ const PlayIcon = {
   }
 }
 
-const DeleteIcon = {
-  render() {
-    return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
-      h('polyline', { points: '3 6 5 6 21 6' }),
-      h('path', { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }),
-    ])
-  }
-}
-
-const CopyIcon = {
-  render() {
-    return h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
-      h('rect', { x: '9', y: '9', width: '13', height: '13', rx: '2' }),
-      h('path', { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' }),
-    ])
-  }
-}
-
 const columns = [
   {
     type: 'selection',
@@ -397,7 +370,7 @@ const columns = [
   {
     title: '操作',
     key: 'actions',
-    width: 200,
+    width: 160,
     render: (row: Task) => h(NSpace, { size: 'small' }, {
       default: () => [
         h(NTooltip, null, {
@@ -407,14 +380,6 @@ const columns = [
         h(NTooltip, null, {
           trigger: () => h(NButton, { size: 'small', quaternary: true, circle: true, type: 'info', onClick: () => executeTask(row) }, { icon: () => h(NIcon, null, { default: () => h(PlayIcon) }) }),
           default: () => '执行',
-        }),
-        h(NTooltip, null, {
-          trigger: () => h(NButton, { size: 'small', quaternary: true, circle: true, onClick: () => duplicateTask(row) }, { icon: () => h(NIcon, null, { default: () => h(CopyIcon) }) }),
-          default: () => '复制',
-        }),
-        h(NTooltip, null, {
-          trigger: () => h(NButton, { size: 'small', quaternary: true, circle: true, type: 'error', onClick: () => deleteTask(row) }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) }),
-          default: () => '删除',
         }),
       ],
     }),

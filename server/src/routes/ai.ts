@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import fetch from 'node-fetch';
+import { getJson } from 'serpapi';
 import { config } from '../config.js';
 import { DatabaseService, TaskRow } from '../database.js';
 import { formatTask, serializeTags } from '../task-utils.js';
@@ -13,13 +14,36 @@ function generateShortId(): string {
   return result;
 }
 
+async function searchWeb(query: string, apiKey: string): Promise<string> {
+  try {
+    const results = await getJson({
+      engine: 'google',
+      q: query,
+      api_key: apiKey,
+      num: 8,
+    });
+
+    const organic = results.organic_results || [];
+    if (organic.length === 0) return '';
+
+    const snippets = organic.map((item: any, i: number) => {
+      return `[${i + 1}] ${item.title}\n   URL: ${item.link}\n   ${item.snippet || ''}`;
+    });
+
+    return `以下是与"${query}"相关的网络搜索结果:\n\n${snippets.join('\n\n')}`;
+  } catch (error) {
+    console.error('Web search failed:', error);
+    return '';
+  }
+}
+
 export function aiRouter(db: DatabaseService) {
   const router = Router();
 
   const getAiConfig = async () => {
     const rows = await db.queryAll(
-      'SELECT key, value FROM settings WHERE key IN (?, ?, ?)',
-      ['ai_api_url', 'ai_api_key', 'ai_model']
+      'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?)',
+      ['ai_api_url', 'ai_api_key', 'ai_model', 'serpapi_key']
     ) as { key: string; value: string }[];
 
     const configMap: Record<string, string> = {};
@@ -31,12 +55,13 @@ export function aiRouter(db: DatabaseService) {
       aiApiUrl: configMap.ai_api_url || config.aiApiUrl,
       aiApiKey: configMap.ai_api_key || config.aiApiKey,
       aiModel: configMap.ai_model || config.aiModel,
+      serpapiKey: configMap.serpapi_key || '',
     };
   };
 
   router.post('/chat', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { messages, model } = req.body;
+      const { messages, model, enable_web_search } = req.body;
       const aiConfig = await getAiConfig();
 
       if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
@@ -47,18 +72,28 @@ export function aiRouter(db: DatabaseService) {
         return;
       }
 
-      const systemMessage = {
-        role: 'system',
-        content: `You are an intelligent task scheduler assistant. Help users create and manage automated tasks.
+      const shouldSearch = enable_web_search === true;
+      const lastUserMsg = [...(messages || [])].reverse().find((m: any) => m.role === 'user');
+      let searchContext = '';
+      if (shouldSearch && aiConfig.serpapiKey && lastUserMsg?.content) {
+        const query = String(lastUserMsg.content).substring(0, 200);
+        searchContext = await searchWeb(query, aiConfig.serpapiKey);
+      }
+
+      let systemContent = `You are an intelligent task scheduler assistant. Help users create and manage automated tasks.
 You can suggest:
 - Script execution tasks (Python, Batch, PowerShell)
 - Popup notifications with custom messages
 - Webhook/API calls for monitoring
 - System operations (shutdown, lock, hibernate)
 
-When users describe what they want to automate, provide helpful advice AND structured task suggestions.
+When users describe what they want to automate, provide helpful advice AND structured task suggestions.`;
 
-IMPORTANT: When suggesting tasks, ALWAYS include a JSON array at the end of your response in this exact format:
+      if (searchContext) {
+        systemContent += `\n\n以下是AI搜索获取的网络参考信息，请基于这些信息回答用户的问题:\n\n${searchContext}`;
+      }
+
+      systemContent += `\n\nIMPORTANT: When suggesting tasks, ALWAYS include a JSON array at the end of your response in this exact format:
 \`\`\`json
 [
   {
@@ -89,7 +124,11 @@ Type-specific fields:
 - "system": "system_action": "shutdown|lock|hibernate"
 - "ai_search": "ai_search_query": "search query"
 
-Always provide complete and valid task objects. Double-check schedule_expression format before returning.`,
+Always provide complete and valid task objects. Double-check schedule_expression format before returning.`;
+
+      const systemMessage = {
+        role: 'system',
+        content: systemContent,
       };
 
       const validMessages = (messages || []).filter((m: any) => {
@@ -126,6 +165,193 @@ Always provide complete and valid task objects. Double-check schedule_expression
       } else {
         next(error);
       }
+    }
+  });
+
+  router.post('/chat/stream', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { messages, model, enable_web_search } = req.body;
+      const aiConfig = await getAiConfig();
+
+      if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
+        res.status(400).json({
+          error: 'AI API not configured',
+          message: 'Please configure AI API URL and API key in settings',
+        });
+        return;
+      }
+
+      const shouldSearch = enable_web_search === true;
+      const lastUserMsg = [...(messages || [])].reverse().find((m: any) => m.role === 'user');
+      let searchContext = '';
+      if (shouldSearch && aiConfig.serpapiKey && lastUserMsg?.content) {
+        const query = String(lastUserMsg.content).substring(0, 200);
+        searchContext = await searchWeb(query, aiConfig.serpapiKey);
+      }
+
+      let systemContent = `You are an intelligent task scheduler assistant. Help users create and manage automated tasks.
+You can suggest:
+- Script execution tasks (Python, Batch, PowerShell)
+- Popup notifications with custom messages
+- Webhook/API calls for monitoring
+- System operations (shutdown, lock, hibernate)
+
+When users describe what they want to automate, provide helpful advice AND structured task suggestions.`;
+
+      if (searchContext) {
+        systemContent += `\n\n以下是AI搜索获取的网络参考信息，请基于这些信息回答用户的问题:\n\n${searchContext}`;
+      }
+
+      systemContent += `\n\nIMPORTANT: When suggesting tasks, ALWAYS include a JSON array at the end of your response in this exact format:
+\`\`\`json
+[
+  {
+    "name": "Clear task name",
+    "description": "Clear description of what this task does",
+    "type": "script|popup|webhook|system|ai_search",
+    "schedule_type": "once|cron|daily|weekly|monthly|hourly",
+    "schedule_expression": "MUST follow exact format below",
+    "priority": 5,
+    "max_retries": 3,
+    "timeout_seconds": 300
+  }
+]
+\`\`\`
+
+CRITICAL - schedule_expression MUST use these EXACT formats (NO Chinese, NO words like "每天"):
+- "once": "2026-06-01 09:00:00" (future datetime)
+- "daily": "09:00" (HH:MM only, 24-hour format)
+- "weekly": "1 09:00" (day_of_week 0-6, then HH:MM, 0=Sunday)
+- "monthly": "1 09:00" (day 1-31, then HH:MM)
+- "cron": "*/5 * * * *" (standard 5-field cron)
+- "hourly": "0" (minute 0-59)
+
+Type-specific fields:
+- "popup": "popup_title": "title", "popup_content": "content"
+- "script": "script_path": "/path/to/script"
+- "webhook": "webhook_url": "https://example.com/api"
+- "system": "system_action": "shutdown|lock|hibernate"
+- "ai_search": "ai_search_query": "search query"
+
+Always provide complete and valid task objects. Double-check schedule_expression format before returning.`;
+
+      const systemMessage = {
+        role: 'system',
+        content: systemContent,
+      };
+
+      const validMessages = (messages || []).filter((m: any) => {
+        if (m.role === 'assistant') {
+          return m.content || m.tool_calls;
+        }
+        return true;
+      });
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+
+      const apiResponse = await fetch(`${aiConfig.aiApiUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${aiConfig.aiApiKey}`,
+        },
+        body: JSON.stringify({
+          model: model || aiConfig.aiModel,
+          messages: [systemMessage, ...validMessages],
+          temperature: 0.7,
+          max_tokens: 1000,
+          stream: true,
+        }),
+      });
+
+      if (!apiResponse.ok) {
+        const errorText = await apiResponse.text();
+        res.write(`data: ${JSON.stringify({ error: `AI API error: ${apiResponse.status} - ${errorText}` })}\n\n`);
+        res.end();
+        return;
+      }
+
+      const rawBody = apiResponse.body as any;
+      if (!rawBody) {
+        throw new Error('No response body from AI API');
+      }
+
+      const decoder = new TextDecoder();
+      let fullContent = '';
+
+      const sendSSE = (data: any) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      if (typeof rawBody.getReader === 'function') {
+        const reader = rawBody.getReader();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const jsonStr = line.slice(6).trim();
+            if (jsonStr === '[DONE]') continue;
+
+            try {
+              const chunk = JSON.parse(jsonStr);
+              const delta = chunk.choices?.[0]?.delta?.content;
+              if (delta) {
+                fullContent += delta;
+                sendSSE({ content: delta, fullContent });
+              }
+            } catch {
+              // skip malformed chunks
+            }
+          }
+        }
+      } else {
+        let buffer = '';
+        await new Promise<void>((resolve, reject) => {
+          rawBody.on('data', (chunk: Buffer) => {
+            buffer += decoder.decode(chunk, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              const jsonStr = line.slice(6).trim();
+              if (jsonStr === '[DONE]') continue;
+
+              try {
+                const chunk = JSON.parse(jsonStr);
+                const delta = chunk.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullContent += delta;
+                  sendSSE({ content: delta, fullContent });
+                }
+              } catch {
+                // skip malformed chunks
+              }
+            }
+          });
+
+          rawBody.on('end', () => resolve());
+          rawBody.on('error', (err: Error) => reject(err));
+        });
+      }
+
+      sendSSE({ done: true, fullContent });
+      res.end();
+    } catch (error) {
+      if (error instanceof Error) {
+        res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      }
+      res.end();
     }
   });
 

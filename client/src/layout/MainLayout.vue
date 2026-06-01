@@ -14,7 +14,7 @@
       />
     </n-layout-sider>
     <n-layout>
-      <n-layout-header bordered style="padding: 12px 24px; display: flex; justify-content: space-between; align-items: center">
+      <n-layout-header bordered class="top-header">
         <h2 style="margin: 0">{{ currentPageTitle }}</h2>
         <n-space>
           <n-tag :type="serverTagType" size="small">{{ serverStatusLabel }}</n-tag>
@@ -202,12 +202,20 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 16px;
+  padding: 0 16px;
   font-size: 18px;
   font-weight: bold;
   border-bottom: 1px solid #eee;
-  min-height: 64px;
+  height: 56px;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.top-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 24px;
+  height: 56px;
 }
 </style>
