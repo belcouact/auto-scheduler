@@ -75,22 +75,30 @@
               <n-descriptions-item label="耗时">{{ formatDuration(selectedEntry.duration_ms) }}</n-descriptions-item>
             </n-descriptions>
             <n-space style="margin-top: 16px">
+              <n-button type="primary" :loading="rerunLoading" @click="rerunSelectedTask">立即重跑</n-button>
               <n-button tertiary @click="router.push(`/tasks/${selectedEntry.task_id}/edit`)">打开任务</n-button>
               <n-button tertiary @click="applyTaskFilter(selectedEntry.task_id)">筛选同任务记录</n-button>
             </n-space>
           </n-card>
 
           <n-card v-if="selectedEntry.error_message" title="错误信息" size="small" :bordered="false" class="detail-card">
+            <template #header-extra>
+              <n-button text @click="copyText(selectedEntry.error_message, '错误信息已复制')">复制</n-button>
+            </template>
             <pre class="detail-block error-block">{{ selectedEntry.error_message }}</pre>
           </n-card>
 
           <n-card title="执行输出" size="small" :bordered="false" class="detail-card">
+            <template #header-extra>
+              <n-button text @click="copyText(selectedEntry.output || '暂无输出内容', '执行输出已复制')">复制</n-button>
+            </template>
             <pre class="detail-block">{{ selectedEntry.output || '暂无输出内容' }}</pre>
           </n-card>
 
           <n-card title="相关服务器日志" size="small" :bordered="false" class="detail-card">
             <template #header-extra>
               <n-button text @click="loadServerLogs">刷新日志</n-button>
+              <n-button text @click="copyText(selectedLogs.join('\n') || '未找到相关日志。', '服务器日志已复制')">复制</n-button>
             </template>
             <div v-if="selectedLogs.length === 0" class="empty-block">未找到相关日志。</div>
             <pre v-else class="detail-block log-block">{{ selectedLogs.join('\n') }}</pre>
@@ -132,6 +140,7 @@ const history = ref<HistoryEntry[]>([])
 const tasks = ref<Array<{ id: string; name: string }>>([])
 const loading = ref(false)
 const deleting = ref(false)
+const rerunLoading = ref(false)
 const filterStatus = ref<string | null>(null)
 const filterTaskId = ref<string | null>(null)
 const stats = ref<any>({})
@@ -239,9 +248,33 @@ const formatLogEntry = (log: any) => {
   return `${timestamp} [${level}] ${msg}`
 }
 
+const copyText = async (text: string, successMessage: string) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success(successMessage)
+  } catch (error) {
+    message.error('复制失败')
+  }
+}
+
 const openDrawer = (row: HistoryEntry) => {
   selectedEntry.value = row
   drawerVisible.value = true
+}
+
+const rerunSelectedTask = async () => {
+  if (!selectedEntry.value) return
+
+  rerunLoading.value = true
+  try {
+    await taskApi.execute(selectedEntry.value.task_id)
+    message.success('任务已重新执行')
+    await Promise.all([loadHistory(), loadStats(), loadServerLogs()])
+  } catch (error) {
+    message.error('重新执行失败')
+  } finally {
+    rerunLoading.value = false
+  }
 }
 
 const applyTaskFilter = (taskId: string) => {
