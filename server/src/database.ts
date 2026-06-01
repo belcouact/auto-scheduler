@@ -1,7 +1,11 @@
-import Database from 'better-sqlite3';
+import sqlite3 from 'sqlite3';
 import fs from 'fs';
 import path from 'path';
 import logger from './logger.js';
+
+sqlite3.verbose();
+
+const Database = sqlite3.Database;
 
 export interface TaskRow {
   id: string;
@@ -54,20 +58,25 @@ export interface SettingsRow {
 }
 
 export class DatabaseService {
-  private db: Database.Database;
+  private db: Database | null = null;
+  private dbPath: string;
 
   constructor(dbPath: string) {
-    const dir = path.dirname(dbPath);
+    this.dbPath = dbPath;
+  }
+
+  async initialize() {
+    const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-  }
 
-  initialize() {
-    this.db.exec(`
+    this.db = new Database(this.dbPath);
+
+    await this.runPragma('PRAGMA journal_mode = WAL');
+    await this.runPragma('PRAGMA foreign_keys = ON');
+
+    await this.dbExec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -126,8 +135,8 @@ export class DatabaseService {
     `);
 
     try {
-      this.db.prepare('ALTER TABLE tasks ADD COLUMN ai_search_query TEXT').run();
-      this.db.prepare('ALTER TABLE tasks ADD COLUMN ai_search_count INTEGER DEFAULT 10').run();
+      await this.dbRun('ALTER TABLE tasks ADD COLUMN ai_search_query TEXT');
+      await this.dbRun('ALTER TABLE tasks ADD COLUMN ai_search_count INTEGER DEFAULT 10');
       logger.info('Added ai_search_query and ai_search_count columns to tasks table');
     } catch (e: any) {
       if (!e.message.includes('duplicate column')) {
@@ -136,13 +145,11 @@ export class DatabaseService {
     }
 
     try {
-      const stmt = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").get() as { sql: string };
-      if (stmt && !stmt.sql.includes("ai_search'")) {
-        const dbPath = this.db.pragma('database_list', { simple: true });
-        const filePath = Array.isArray(dbPath) ? dbPath[0]?.file : (dbPath as any)?.file;
-        
-        this.db.exec('PRAGMA foreign_keys = OFF');
-        this.db.exec(`
+      const row = await this.dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'") as { sql: string } | null;
+
+      if (row && !row.sql.includes("ai_search'")) {
+        await this.dbExec('PRAGMA foreign_keys = OFF');
+        await this.dbExec(`
           BEGIN TRANSACTION;
           ALTER TABLE tasks RENAME TO tasks_old;
           CREATE TABLE tasks (
@@ -182,14 +189,8 @@ export class DatabaseService {
           CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(type);
           COMMIT;
         `);
-        this.db.exec('PRAGMA foreign_keys = ON');
+        await this.dbExec('PRAGMA foreign_keys = ON');
         logger.info('Rebuilt tasks table with ai_search type support');
-        
-        this.db.close();
-        this.db = new Database(filePath as string);
-        this.db.pragma('journal_mode = WAL');
-        this.db.pragma('foreign_keys = ON');
-        logger.info('Reconnected to database to clear cached statements');
       }
     } catch (e: any) {
       logger.debug('Tasks table already updated or rebuild failed: ' + e.message);
@@ -203,32 +204,106 @@ export class DatabaseService {
       ['default_timeout', '300'],
     ];
 
-    const stmt = this.db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
-    const insertMany = this.db.transaction((rows: [string, string][]) => {
-      for (const [key, value] of rows) {
-        stmt.run(key, value);
-      }
-    });
-    insertMany(defaults);
+    for (const [key, value] of defaults) {
+      await this.dbRun('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', [key, value]);
+    }
   }
 
-  getDb(): Database.Database {
+  getDb(): Database {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
     return this.db;
   }
 
-  queryAll(sql: string, params: any[] = []): any[] {
-    return this.db.prepare(sql).all(...params);
+  async queryAll(sql: string, params: any[] = []): Promise<any[]> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
   }
 
-  querySingle(sql: string, params: any[] = []): any {
-    return this.db.prepare(sql).get(...params);
+  async querySingle(sql: string, params: any[] = []): Promise<any> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
   }
 
-  run(sql: string, params: any[] = []): Database.RunResult {
-    return this.db.prepare(sql).run(...params);
+  async run(sql: string, params: any[] = []): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.run(sql, params, function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  private async dbRun(sql: string, params: any[] = []): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.run(sql, params, function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  private async dbGet(sql: string, params: any[] = []): Promise<any> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+
+  private async dbExec(sql: string): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.exec(sql, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  private async runPragma(sql: string): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return new Promise((resolve, reject) => {
+      this.db!.run(sql, function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
   }
 
   close() {
-    this.db.close();
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
   }
 }

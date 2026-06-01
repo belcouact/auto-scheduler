@@ -16,8 +16,8 @@ function generateShortId(): string {
 export function aiRouter(db: DatabaseService) {
   const router = Router();
 
-  const getAiConfig = () => {
-    const rows = db.queryAll(
+  const getAiConfig = async () => {
+    const rows = await db.queryAll(
       'SELECT key, value FROM settings WHERE key IN (?, ?, ?)',
       ['ai_api_url', 'ai_api_key', 'ai_model']
     ) as { key: string; value: string }[];
@@ -37,7 +37,7 @@ export function aiRouter(db: DatabaseService) {
   router.post('/chat', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { messages, model } = req.body;
-      const aiConfig = getAiConfig();
+      const aiConfig = await getAiConfig();
 
       if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
         res.status(400).json({
@@ -56,8 +56,40 @@ You can suggest:
 - Webhook/API calls for monitoring
 - System operations (shutdown, lock, hibernate)
 
-When users describe what they want to automate, provide structured suggestions in JSON format that can be used to create tasks.
-Always be helpful and provide practical advice for task scheduling.`,
+When users describe what they want to automate, provide helpful advice AND structured task suggestions.
+
+IMPORTANT: When suggesting tasks, ALWAYS include a JSON array at the end of your response in this exact format:
+\`\`\`json
+[
+  {
+    "name": "Clear task name",
+    "description": "Clear description of what this task does",
+    "type": "script|popup|webhook|system|ai_search",
+    "schedule_type": "once|cron|daily|weekly|monthly|hourly",
+    "schedule_expression": "MUST follow exact format below",
+    "priority": 5,
+    "max_retries": 3,
+    "timeout_seconds": 300
+  }
+]
+\`\`\`
+
+CRITICAL - schedule_expression MUST use these EXACT formats (NO Chinese, NO words like "每天"):
+- "once": "2026-06-01 09:00:00" (future datetime)
+- "daily": "09:00" (HH:MM only, 24-hour format)
+- "weekly": "1 09:00" (day_of_week 0-6, then HH:MM, 0=Sunday)
+- "monthly": "1 09:00" (day 1-31, then HH:MM)
+- "cron": "*/5 * * * *" (standard 5-field cron)
+- "hourly": "0" (minute 0-59)
+
+Type-specific fields:
+- "popup": "popup_title": "title", "popup_content": "content"
+- "script": "script_path": "/path/to/script"
+- "webhook": "webhook_url": "https://example.com/api"
+- "system": "system_action": "shutdown|lock|hibernate"
+- "ai_search": "ai_search_query": "search query"
+
+Always provide complete and valid task objects. Double-check schedule_expression format before returning.`,
       };
 
       const validMessages = (messages || []).filter((m: any) => {
@@ -100,7 +132,7 @@ Always be helpful and provide practical advice for task scheduling.`,
   router.post('/suggest-tasks', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { context } = req.body;
-      const aiConfig = getAiConfig();
+      const aiConfig = await getAiConfig();
 
       if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
         res.status(400).json({
@@ -168,7 +200,7 @@ Return your response as a JSON array of task objects with this structure:
   router.post('/create-task', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { description } = req.body;
-      const aiConfig = getAiConfig();
+      const aiConfig = await getAiConfig();
 
       if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
         res.status(400).json({
@@ -256,7 +288,7 @@ For schedule_expression:
 
       const tags = serializeTags(taskData.tags);
 
-      db.run(`
+      await db.run(`
         INSERT INTO tasks (
           id, name, description, type, enabled, schedule_type, schedule_expression,
           script_path, script_args, popup_title, popup_content, popup_icon,
@@ -291,7 +323,7 @@ For schedule_expression:
         taskData.timeout_seconds || 300,
       ]);
 
-      const created = db.querySingle('SELECT * FROM tasks WHERE id = ?', [id]) as TaskRow | null;
+      const created = await db.querySingle('SELECT * FROM tasks WHERE id = ?', [id]) as TaskRow | null;
       if (!created) {
         throw new Error('Created task could not be loaded');
       }

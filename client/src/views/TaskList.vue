@@ -33,15 +33,18 @@
         <n-button @click="loadTasks">刷新</n-button>
       </n-space>
 
-      <n-data-table
-        :columns="columns"
-        :data="tasks"
-        :loading="loading"
-        :pagination="{ pageSize: 20 }"
-        :row-key="(row: Task) => row.id"
-        :checked-row-keys="checkedRowKeys"
-        @update:checked-row-keys="onCheckedRowKeysChange"
-      />
+      <div style="overflow-x: auto">
+        <n-data-table
+          :columns="columns"
+          :data="tasks"
+          :loading="loading"
+          :pagination="{ pageSize: 20 }"
+          :row-key="(row: Task) => row.id"
+          :checked-row-keys="checkedRowKeys"
+          :scroll-x="1200"
+          @update:checked-row-keys="onCheckedRowKeysChange"
+        />
+      </div>
     </n-card>
 
     <n-modal v-model:show="showAiCreate" preset="card" title="AI 创建任务" style="width: 500px" :on-update:show="resetAiCreate">
@@ -366,15 +369,6 @@ const columns = [
     render: (row: Task) => getScheduleLabel(row),
   },
   {
-    title: '优先级',
-    key: 'priority',
-    width: 70,
-    render: (row: Task) => h(NTag, {
-      type: row.priority >= 7 ? 'error' : row.priority >= 4 ? 'warning' : 'default',
-      size: 'small'
-    }, { default: () => String(row.priority) }),
-  },
-  {
     title: '上次执行',
     key: 'last_run',
     width: 160,
@@ -391,13 +385,6 @@ const columns = [
     },
   },
   {
-    title: '下次执行',
-    key: 'next_run_at',
-    width: 170,
-    ellipsis: { tooltip: true },
-    render: (row: Task) => formatDateTime(row.next_run_at),
-  },
-  {
     title: '启用',
     key: 'enabled',
     width: 70,
@@ -410,7 +397,7 @@ const columns = [
   {
     title: '操作',
     key: 'actions',
-    width: 160,
+    width: 200,
     render: (row: Task) => h(NSpace, { size: 'small' }, {
       default: () => [
         h(NTooltip, null, {

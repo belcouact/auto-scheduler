@@ -377,16 +377,6 @@ const columns = [
     render: (row: HistoryEntry) => formatDuration(row.duration_ms),
   },
   {
-    title: '输出/错误',
-    key: 'output',
-    ellipsis: { tooltip: true },
-    render: (row: HistoryEntry) => {
-      const text = row.error_message || row.output || '-'
-      const style = row.error_message ? 'color: #d03050' : 'color: #475569'
-      return h('span', { style }, text.length > 60 ? `${text.substring(0, 60)}...` : text)
-    },
-  },
-  {
     title: '操作',
     key: 'actions',
     width: 140,

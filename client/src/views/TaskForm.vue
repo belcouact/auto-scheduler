@@ -233,7 +233,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useMessage, NAlert, NCard, NForm, NFormItem, NInput, NGrid, NGi, NSelect, NSlider, NDynamicTags, NDivider, NButton, NSpace, NInputNumber, NDatePicker, NTimePicker, NTag } from 'naive-ui'
 import type { FormInst, FormRules } from 'naive-ui'
@@ -515,7 +515,7 @@ const rules: FormRules = {
   },
 }
 
-const onTypeChange = (type: string) => {
+const onTypeChange = (_type: string) => {
   formData.value.script_path = null
   formData.value.popup_title = null
   formData.value.popup_content = null
@@ -525,7 +525,11 @@ const onTypeChange = (type: string) => {
   formData.value.ai_search_count = 10
 }
 
+const skipScheduleTypeWatch = ref(false)
+
 watch(() => formData.value.schedule_type, (newType) => {
+  if (skipScheduleTypeWatch.value) return
+
   formData.value.schedule_expression = ''
   scheduleDateTime.value = null
   scheduleTimeString.value = '09:00'
@@ -589,11 +593,19 @@ onMounted(async () => {
   if (isEdit.value) {
     try {
       const result = await taskApi.get(route.params.id as string)
-      formData.value = result.data
-      if (result.data.webhook_headers) {
-        webhookHeadersStr.value = JSON.stringify(result.data.webhook_headers, null, 2)
+      skipScheduleTypeWatch.value = true
+      
+      const loadedData = result.data
+      formData.value = { ...formData.value, ...loadedData }
+      
+      if (loadedData.webhook_headers) {
+        webhookHeadersStr.value = JSON.stringify(loadedData.webhook_headers, null, 2)
       }
-      initSchedulePickers()
+      
+      nextTick(() => {
+        initSchedulePickers()
+        skipScheduleTypeWatch.value = false
+      })
     } catch (error) {
       message.error('加载任务失败')
       router.push('/tasks')

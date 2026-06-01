@@ -29,14 +29,14 @@ export function historyRouter(db: DatabaseService) {
       query += ' ORDER BY started_at DESC LIMIT ? OFFSET ?';
       params.push(parseInt(String(limit), 10), parseInt(String(offset), 10));
 
-      const history = db.queryAll(query, params) as HistoryRow[];
+      const history = await db.queryAll(query, params) as HistoryRow[];
 
       const countQuery = task_id || status
         ? `SELECT COUNT(*) as total FROM execution_history WHERE ${conditions.join(' AND ')}`
         : 'SELECT COUNT(*) as total FROM execution_history';
 
       const countParams = task_id || status ? params.slice(0, -2) : [];
-      const countResult = db.querySingle(countQuery, countParams) as { total: number } | null;
+      const countResult = await db.querySingle(countQuery, countParams) as { total: number } | null;
       const total = countResult?.total || 0;
 
       res.json({
@@ -54,7 +54,7 @@ export function historyRouter(db: DatabaseService) {
 
   router.get('/stats', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const stats = db.querySingle(`
+      const stats = await db.querySingle(`
         SELECT 
           COUNT(*) as total_executions,
           SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
@@ -63,14 +63,14 @@ export function historyRouter(db: DatabaseService) {
         FROM execution_history
       `) as any;
 
-      const recentByStatus = db.queryAll(`
+      const recentByStatus = await db.queryAll(`
         SELECT status, COUNT(*) as count 
         FROM execution_history 
         WHERE started_at >= datetime('now', '-7 days')
         GROUP BY status
       `) as any[];
 
-      const topTasks = db.queryAll(`
+      const topTasks = await db.queryAll(`
         SELECT h.task_id, t.name, COUNT(*) as execution_count,
           SUM(CASE WHEN h.status = 'success' THEN 1 ELSE 0 END) as success_count
         FROM execution_history h
@@ -100,7 +100,7 @@ export function historyRouter(db: DatabaseService) {
         return;
       }
       const placeholders = ids.map(() => '?').join(',');
-      db.run(`DELETE FROM execution_history WHERE id IN (${placeholders})`, ids);
+      await db.run(`DELETE FROM execution_history WHERE id IN (${placeholders})`, ids);
       res.json({ message: `Deleted ${ids.length} records` });
     } catch (error) {
       next(error);
@@ -112,12 +112,12 @@ export function historyRouter(db: DatabaseService) {
       const { older_than_days } = req.body;
 
       if (older_than_days) {
-        db.run(`
+        await db.run(`
           DELETE FROM execution_history 
           WHERE started_at < datetime('now', ?)
         `, [`-${older_than_days} days`]);
       } else {
-        db.run('DELETE FROM execution_history');
+        await db.run('DELETE FROM execution_history');
       }
 
       res.json({ message: 'History cleared' });

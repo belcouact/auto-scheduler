@@ -29,10 +29,8 @@ export class SchedulerService {
   async start() {
     logger.info(`Using local timezone: ${localTimezone}`);
     this.clearPendingRetries();
-    this.db.run('UPDATE tasks SET next_run_at = NULL');
-    const tasks = this.db.getDb().prepare(`
-      SELECT * FROM tasks WHERE enabled = 1
-    `).all() as TaskRow[];
+    await this.db.run('UPDATE tasks SET next_run_at = NULL');
+    const tasks = await this.db.queryAll('SELECT * FROM tasks WHERE enabled = 1') as TaskRow[];
 
     for (const task of tasks) {
       this.scheduleTask(task);
@@ -47,11 +45,9 @@ export class SchedulerService {
     }
     this.scheduledTasks.clear();
     this.clearPendingRetries();
-    this.db.run('UPDATE tasks SET next_run_at = NULL WHERE enabled = 0');
+    await this.db.run('UPDATE tasks SET next_run_at = NULL WHERE enabled = 0');
 
-    const tasks = this.db.getDb().prepare(`
-      SELECT * FROM tasks WHERE enabled = 1
-    `).all() as TaskRow[];
+    const tasks = await this.db.queryAll('SELECT * FROM tasks WHERE enabled = 1') as TaskRow[];
 
     for (const task of tasks) {
       this.scheduleTask(task);
@@ -123,10 +119,10 @@ export class SchedulerService {
     const historyId = randomUUID();
     const startedAt = new Date().toISOString();
 
-    this.db.getDb().prepare(`
+    await this.db.run(`
       INSERT INTO execution_history (id, task_id, task_name, status, started_at)
       VALUES (?, ?, ?, 'running', ?)
-    `).run(historyId, task.id, task.name, startedAt);
+    `, [historyId, task.id, task.name, startedAt]);
 
     try {
       let output: string;
@@ -157,44 +153,44 @@ export class SchedulerService {
         ? null
         : calculateNextRun(task, new Date(completedAt));
 
-      this.db.getDb().prepare(`
+      await this.db.run(`
         UPDATE execution_history 
         SET status = 'success', output = ?, completed_at = ?, duration_ms = ?
         WHERE id = ?
-      `).run(output, completedAt, durationMs, historyId);
+      `, [output, completedAt, durationMs, historyId]);
 
-      this.db.getDb().prepare(`
+      await this.db.run(`
         UPDATE tasks 
         SET last_run_at = ?, last_run_status = 'success', retry_count = 0, next_run_at = ?, enabled = ?
         WHERE id = ?
-      `).run(completedAt, nextRunAt, task.schedule_type === 'once' ? 0 : 1, task.id);
+      `, [completedAt, nextRunAt, task.schedule_type === 'once' ? 0 : 1, task.id]);
 
       logger.info(`Task "${task.name}" completed successfully`);
     } catch (error) {
       const completedAt = new Date().toISOString();
       const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const latestTask = this.db.querySingle('SELECT * FROM tasks WHERE id = ?', [task.id]) as TaskRow | null;
+      const latestTask = await this.db.querySingle('SELECT * FROM tasks WHERE id = ?', [task.id]) as TaskRow | null;
       const currentRetryCount = latestTask?.retry_count ?? task.retry_count ?? 0;
       const maxRetries = latestTask?.max_retries ?? task.max_retries;
       const hasRetryRemaining = currentRetryCount < maxRetries;
 
-      this.db.getDb().prepare(`
+      await this.db.run(`
         UPDATE execution_history 
         SET status = 'error', error_message = ?, completed_at = ?, duration_ms = ?
         WHERE id = ?
-      `).run(errorMessage, completedAt, durationMs, historyId);
+      `, [errorMessage, completedAt, durationMs, historyId]);
 
       if (hasRetryRemaining) {
         const nextRetryCount = currentRetryCount + 1;
         const retryDelaySeconds = Math.min(300, nextRetryCount * 30);
         const retryAt = new Date(Date.now() + retryDelaySeconds * 1000).toISOString();
 
-        this.db.getDb().prepare(`
+        await this.db.run(`
           UPDATE tasks
           SET last_run_at = ?, last_run_status = 'error', retry_count = ?, next_run_at = ?
           WHERE id = ?
-        `).run(completedAt, nextRetryCount, retryAt, task.id);
+        `, [completedAt, nextRetryCount, retryAt, task.id]);
 
         this.scheduleRetry(task.id, retryDelaySeconds * 1000);
         logger.warn(`Task "${task.name}" failed. Retrying in ${retryDelaySeconds}s (${nextRetryCount}/${maxRetries})`);
@@ -203,11 +199,11 @@ export class SchedulerService {
           ? null
           : calculateNextRun(task, new Date(completedAt));
 
-        this.db.getDb().prepare(`
+        await this.db.run(`
           UPDATE tasks
           SET last_run_at = ?, last_run_status = 'error', next_run_at = ?, enabled = ?
           WHERE id = ?
-        `).run(completedAt, nextRunAt, task.schedule_type === 'once' ? 0 : 1, task.id);
+        `, [completedAt, nextRunAt, task.schedule_type === 'once' ? 0 : 1, task.id]);
       }
 
       logger.error(`Task "${task.name}" failed: ${errorMessage}`);
@@ -348,7 +344,7 @@ export class SchedulerService {
       throw new Error('AI search query is required');
     }
 
-    const aiConfig = this.getAiConfig();
+    const aiConfig = await this.getAiConfig();
     if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
       throw new Error('AI API not configured. Please configure AI API URL and API key in settings.');
     }
@@ -430,6 +426,8 @@ Provide exactly ${searchCount} items. Be factual and concise.`;
     fs.writeFileSync(tmpFile, content, 'utf-8');
 
     const safeTitle = title.replace(/'/g, "''").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const iconDeco = this.getIconDecorations(icon);
+    const iconColor = this.getIconColor(icon);
 
     const psCommand = `
 $content = [System.IO.File]::ReadAllText('${tmpFile}')
@@ -441,6 +439,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media.Animation;
 public class NativeMethods {
   [DllImport("user32.dll")]
   public static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -450,8 +449,8 @@ public class NativeMethods {
 '
 $window = New-Object System.Windows.Window
 $window.Title = '${safeTitle}'
-$window.Width = 460
-$window.Height = 300
+$window.Width = 480
+$window.Height = 320
 $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
 $window.Topmost = $true
 $window.ResizeMode = 'NoResize'
@@ -459,55 +458,113 @@ $window.WindowStyle = 'SingleBorderWindow'
 $window.Background = [System.Windows.Media.Brushes]::White
 $window.AllowsTransparency = $false
 
-# Enable rounded corners and shadow via DWM
 $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
 $DWMWA_WINDOW_CORNER_PREFERENCE = 33
 $DWMWCP_ROUND = 2
 [NativeMethods]::DwmSetWindowAttribute($hwnd, $DWMWA_WINDOW_CORNER_PREFERENCE, [ref]$DWMWCP_ROUND, 4) | Out-Null
 
+$border = New-Object System.Windows.Controls.Border
+$border.Background = [System.Windows.Media.Brushes]::White
+$border.BorderBrush = [System.Windows.Media.Brushes]::FromRgb(220, 240, 255)
+$border.BorderThickness = New-Object System.Windows.Thickness(2)
+$border.CornerRadius = New-Object System.Windows.CornerRadius(16, 16, 16, 16)
+$window.Content = $border
+
 $grid = New-Object System.Windows.Controls.Grid
-$margin = New-Object System.Windows.Thickness(30, 25, 30, 25)
-$grid.Margin = $margin
-$window.Content = $grid
+$border.Child = $grid
+$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
 
-$stack = New-Object System.Windows.Controls.StackPanel
-$stack.HorizontalAlignment = 'Center'
-$stack.VerticalAlignment = 'Center'
-$grid.Children.Add($stack) | Out-Null
+$topBar = New-Object System.Windows.Controls.StackPanel
+$topBar.Orientation = 'Horizontal'
+$topBar.HorizontalAlignment = 'Center'
+$topBar.Margin = New-Object System.Windows.Thickness(0, 20, 0, 0)
+[System.Windows.Controls.Grid]::SetRow($topBar, 0)
+$grid.Children.Add($topBar) | Out-Null
 
-$iconText = New-Object System.Windows.Controls.TextBlock
-$iconText.Text = '${icon.replace(/'/g, "''")}'
-$iconText.FontSize = 36
-$iconText.HorizontalAlignment = 'Center'
-$iconText.Margin = New-Object System.Windows.Thickness(0, 0, 0, 16)
-$stack.Children.Add($iconText) | Out-Null
+$leftDeco = New-Object System.Windows.Controls.TextBlock
+$leftDeco.Text = '${iconDeco.left}'
+$leftDeco.FontSize = 20
+$leftDeco.VerticalAlignment = 'Center'
+$leftDeco.Opacity = 0.7
+$topBar.Children.Add($leftDeco) | Out-Null
+
+$mainIcon = New-Object System.Windows.Controls.TextBlock
+$mainIcon.Text = '${icon.replace(/'/g, "''")}'
+$mainIcon.FontSize = 48
+$mainIcon.VerticalAlignment = 'Center'
+$mainIcon.Margin = New-Object System.Windows.Thickness(15, 0, 15, 0)
+$topBar.Children.Add($mainIcon) | Out-Null
+
+$rightDeco = New-Object System.Windows.Controls.TextBlock
+$rightDeco.Text = '${iconDeco.right}'
+$rightDeco.FontSize = 20
+$rightDeco.VerticalAlignment = 'Center'
+$rightDeco.Opacity = 0.7
+$topBar.Children.Add($rightDeco) | Out-Null
+
+$iconGlow = New-Object System.Windows.Media.DropShadowEffect
+$iconGlow.Color = [System.Windows.Media.Color]::FromRgb(${iconColor.r}, ${iconColor.g}, ${iconColor.b})
+$iconGlow.BlurRadius = 20
+$iconGlow.ShadowDepth = 0
+$mainIcon.Effect = $iconGlow
+
+$scaleStoryboard = New-Object System.Windows.Media.Animation.ObjectAnimationUsingKeyFrames
+$scaleStoryboard.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+$scaleStoryboard.AutoReverse = $true
+$scaleKey1 = New-Object System.Windows.Media.Animation.DiscreteObjectKeyFrame
+$scaleKey1.KeyTime = [System.Windows.Media.Animation.KeyTime]::FromPercent(0)
+$scaleKey1.Value = 1.0
+$scaleKey2 = New-Object System.Windows.Media.Animation.DiscreteObjectKeyFrame
+$scaleKey2.KeyTime = [System.Windows.Media.Animation.KeyTime]::FromPercent(0.5)
+$scaleKey2.Value = 1.15
+$scaleKey3 = New-Object System.Windows.Media.Animation.DiscreteObjectKeyFrame
+$scaleKey3.KeyTime = [System.Windows.Media.Animation.KeyTime]::FromPercent(1.0)
+$scaleKey3.Value = 1.0
+$scaleStoryboard.KeyFrames.Add($scaleKey1)
+$scaleStoryboard.KeyFrames.Add($scaleKey2)
+$scaleStoryboard.KeyFrames.Add($scaleKey3)
+$mainIcon.BeginAnimation([System.Windows.Controls.TextBlock]::FontSizeProperty, $scaleStoryboard)
+
+$msgScroll = New-Object System.Windows.Controls.ScrollViewer
+$msgScroll.VerticalScrollBarVisibility = 'Auto'
+$msgScroll.HorizontalScrollBarVisibility = 'Disabled'
+$msgScroll.Padding = New-Object System.Windows.Thickness(30, 15, 30, 15)
+[System.Windows.Controls.Grid]::SetRow($msgScroll, 1)
+$grid.Children.Add($msgScroll) | Out-Null
 
 $msgText = New-Object System.Windows.Controls.TextBlock
 $msgText.Text = $content
 $msgText.FontSize = 15
-$msgText.FontFamily = New-Object System.Windows.Media.FontFamily('Microsoft YaHei')
+$msgText.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe UI Emoji, Microsoft YaHei')
 $msgText.Foreground = [System.Windows.Media.Brushes]::FromRgb(31, 41, 55)
 $msgText.TextAlignment = 'Center'
 $msgText.TextWrapping = 'Wrap'
-$msgText.MaxWidth = 380
-$msgText.HorizontalAlignment = 'Center'
-$msgText.Margin = New-Object System.Windows.Thickness(0, 0, 0, 24)
-$stack.Children.Add($msgText) | Out-Null
+$msgScroll.Content = $msgText
+
+$btnPanel = New-Object System.Windows.Controls.StackPanel
+$btnPanel.Orientation = 'Horizontal'
+$btnPanel.HorizontalAlignment = 'Center'
+$btnPanel.Margin = New-Object System.Windows.Thickness(0, 0, 0, 20)
+[System.Windows.Controls.Grid]::SetRow($btnPanel, 2)
+$grid.Children.Add($btnPanel) | Out-Null
 
 $btn = New-Object System.Windows.Controls.Button
-$btn.Content = '  确定  '
-$btn.Width = 100
-$btn.Height = 36
-$btn.FontSize = 14
+$btn.Content = '  ✨ 确定 ✨  '
+$btn.Width = 140
+$btn.Height = 42
+$btn.FontSize = 15
 $btn.FontFamily = New-Object System.Windows.Media.FontFamily('Microsoft YaHei')
 $btn.HorizontalAlignment = 'Center'
 $btn.Foreground = [System.Windows.Media.Brushes]::White
 $btn.Background = [System.Windows.Media.Brushes]::FromRgb(24, 144, 255)
 $btn.BorderThickness = New-Object System.Windows.Thickness(0)
-$btn.Padding = New-Object System.Windows.Thickness(0)
 $btn.Cursor = 'Hand'
+$btn.Margin = New-Object System.Windows.Thickness(0, 0, 10, 0)
+$btn.Padding = New-Object System.Windows.Thickness(20, 8, 20, 8)
 $btn.Add_Click({ $window.Close() })
-$stack.Children.Add($btn) | Out-Null
+$btnPanel.Children.Add($btn) | Out-Null
 
 $btn.Add_MouseEnter({ $btn.Background = [System.Windows.Media.Brushes]::FromRgb(64, 158, 255) })
 $btn.Add_MouseLeave({ $btn.Background = [System.Windows.Media.Brushes]::FromRgb(24, 144, 255) })
@@ -545,6 +602,47 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
         reject(new Error(`Failed to show native popup: ${err.message}`));
       });
     });
+  }
+
+  private getIconDecorations(icon: string): { left: string; right: string } {
+    const decoMap: Record<string, { left: string; right: string }> = {
+      '⏰': { left: '🕐', right: '🕑' },
+      '🔔': { left: '✨', right: '✨' },
+      '💡': { left: '💫', right: '💫' },
+      '📝': { left: '✏️', right: '✏️' },
+      '⚡': { left: '🌟', right: '🌟' },
+      '🔒': { left: '🛡️', right: '🛡️' },
+      '📧': { left: '📬', right: '📫' },
+      '🔍': { left: '👀', right: '👀' },
+      '💻': { left: '🖥️', right: '🖥️' },
+      '☕': { left: '🍵', right: '🍵' },
+      '🎵': { left: '🎶', right: '🎶' },
+      '📊': { left: '📈', right: '📉' },
+      '🎯': { left: '🎯', right: '🎯' },
+      '🔧': { left: '🛠️', right: '🛠️' },
+      '📋': { left: '📌', right: '📌' },
+    };
+    return decoMap[icon] || { left: '🌟', right: '🌟' };
+  }
+
+  private getIconColor(icon: string): { r: number; g: number; b: number } {
+    const colorMap: Record<string, { r: number; g: number; b: number }> = {
+      '⏰': { r: 255, g: 179, b: 71 },
+      '🔔': { r: 255, g: 215, b: 0 },
+      '💡': { r: 255, g: 223, b: 0 },
+      '⚡': { r: 255, g: 200, b: 0 },
+      '🔒': { r: 100, g: 180, b: 255 },
+      '📧': { r: 70, g: 130, b: 255 },
+      '🔍': { r: 100, g: 200, b: 255 },
+      '💻': { r: 100, g: 100, b: 100 },
+      '☕': { r: 139, g: 90, b: 43 },
+      '🎵': { r: 255, g: 100, b: 150 },
+      '📊': { r: 50, g: 200, b: 100 },
+      '🎯': { r: 255, g: 100, b: 100 },
+      '🔧': { r: 150, g: 150, b: 150 },
+      '📋': { r: 255, g: 150, b: 50 },
+    };
+    return colorMap[icon] || { r: 24, g: 144, b: 255 };
   }
 
   private async showPopupWithContentNative(title: string, content: string, icon: string): Promise<void> {
@@ -649,8 +747,8 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
     });
   }
 
-  private getAiConfig() {
-    const rows = this.db.queryAll(
+  private async getAiConfig() {
+    const rows = await this.db.queryAll(
       'SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?)',
       ['ai_api_url', 'ai_api_key', 'ai_model', 'ai_enable_web_search']
     ) as { key: string; value: string }[];
@@ -691,15 +789,15 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
     return this.scheduledTasks.size;
   }
 
-  private updateNextRun(taskId: string, nextRunAt: string | null) {
-    this.db.run('UPDATE tasks SET next_run_at = ? WHERE id = ?', [nextRunAt, taskId]);
+  private async updateNextRun(taskId: string, nextRunAt: string | null) {
+    await this.db.run('UPDATE tasks SET next_run_at = ? WHERE id = ?', [nextRunAt, taskId]);
   }
 
   private scheduleRetry(taskId: string, delayMs: number) {
     this.clearRetry(taskId);
     const timeout = setTimeout(async () => {
       this.pendingRetries.delete(taskId);
-      const latestTask = this.db.querySingle('SELECT * FROM tasks WHERE id = ?', [taskId]) as TaskRow | null;
+      const latestTask = await this.db.querySingle('SELECT * FROM tasks WHERE id = ?', [taskId]) as TaskRow | null;
       if (!latestTask || !latestTask.enabled) {
         return;
       }

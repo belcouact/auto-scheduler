@@ -82,7 +82,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
       query += ' ORDER BY priority DESC, created_at DESC';
 
-      const tasks = db.queryAll(query, params) as TaskRow[];
+      const tasks = await db.queryAll(query, params) as TaskRow[];
 
       res.json({
         data: tasks.map(formatTask),
@@ -94,7 +94,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
   router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const task = getTaskById(db, req.params.id);
+      const task = await getTaskById(db, req.params.id);
       res.json({ data: formatTask(task) });
     } catch (error) {
       next(error);
@@ -110,7 +110,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
       const tags = serializeTags(validated.tags);
 
-      db.run(`
+      await db.run(`
         INSERT INTO tasks (
           id, name, description, type, enabled, schedule_type, schedule_expression,
           script_path, script_args, popup_title, popup_content, popup_icon,
@@ -146,7 +146,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
         validated.timeout_seconds,
       ]);
 
-      const task = getTaskById(db, id);
+      const task = await getTaskById(db, id);
       if (validated.enabled) {
         await scheduler.rescheduleAll();
       }
@@ -163,7 +163,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
   router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      getTaskById(db, req.params.id);
+      await getTaskById(db, req.params.id);
       const validated = updateTaskSchema.parse(req.body);
       validateTaskSemantics(validated);
       const now = new Date().toISOString();
@@ -193,13 +193,13 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
       params.push(now);
       params.push(req.params.id);
 
-      db.run(`
+      await db.run(`
         UPDATE tasks SET ${fields.join(', ')} WHERE id = ?
       `, params);
 
       await scheduler.rescheduleAll();
 
-      const task = getTaskById(db, req.params.id);
+      const task = await getTaskById(db, req.params.id);
       res.json({ data: formatTask(task) });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -212,12 +212,12 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
   router.post('/duplicate/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const sourceTask = getTaskById(db, req.params.id);
+      const sourceTask = await getTaskById(db, req.params.id);
       const id = generateShortId();
       const now = new Date().toISOString();
-      const duplicateName = buildDuplicateName(db, sourceTask.name);
+      const duplicateName = await buildDuplicateName(db, sourceTask.name);
 
-      db.run(`
+      await db.run(`
         INSERT INTO tasks (
           id, name, description, type, enabled, schedule_type, schedule_expression,
           script_path, script_args, popup_title, popup_content, popup_icon,
@@ -257,7 +257,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
         sourceTask.timeout_seconds,
       ]);
 
-      const created = getTaskById(db, id);
+      const created = await getTaskById(db, id);
       res.status(201).json({
         data: formatTask(created),
         message: 'Task duplicated successfully',
@@ -272,7 +272,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
       const { ids, enabled } = batchUpdateSchema.parse(req.body);
       const placeholders = ids.map(() => '?').join(',');
 
-      db.run(
+      await db.run(
         `UPDATE tasks SET enabled = ?, updated_at = ?, retry_count = 0, next_run_at = NULL WHERE id IN (${placeholders})`,
         [enabled ? 1 : 0, new Date().toISOString(), ...ids]
       );
@@ -293,7 +293,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
       const { ids } = batchDeleteSchema.parse(req.body);
       const placeholders = ids.map(() => '?').join(',');
 
-      db.run(`DELETE FROM tasks WHERE id IN (${placeholders})`, ids);
+      await db.run(`DELETE FROM tasks WHERE id IN (${placeholders})`, ids);
       for (const id of ids) {
         scheduler.removeTask(id);
       }
@@ -311,9 +311,9 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
   router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      getTaskById(db, req.params.id);
+      await getTaskById(db, req.params.id);
 
-      db.run('DELETE FROM tasks WHERE id = ?', [req.params.id]);
+      await db.run('DELETE FROM tasks WHERE id = ?', [req.params.id]);
       scheduler.removeTask(req.params.id);
 
       res.json({ message: 'Task deleted successfully' });
@@ -324,7 +324,7 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
 
   router.post('/execute/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const task = getTaskById(db, req.params.id);
+      const task = await getTaskById(db, req.params.id);
       await scheduler.executeTask(task);
       res.json({ message: 'Task executed successfully' });
     } catch (error) {
@@ -335,8 +335,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
   return router;
 }
 
-function getTaskById(db: DatabaseService, id: string): TaskRow {
-  const task = db.querySingle('SELECT * FROM tasks WHERE id = ?', [id]) as TaskRow | null;
+async function getTaskById(db: DatabaseService, id: string): Promise<TaskRow> {
+  const task = await db.querySingle('SELECT * FROM tasks WHERE id = ?', [id]) as TaskRow | null;
 
   if (!task) {
     throw new NotFoundError('Task', id);
@@ -385,12 +385,12 @@ function validateTaskSemantics(task: Partial<z.infer<typeof createTaskSchema>>) 
   }
 }
 
-function buildDuplicateName(db: DatabaseService, sourceName: string): string {
+async function buildDuplicateName(db: DatabaseService, sourceName: string): Promise<string> {
   const baseName = `${sourceName} Copy`;
   let candidate = baseName;
   let index = 2;
 
-  while (db.querySingle('SELECT id FROM tasks WHERE name = ?', [candidate])) {
+  while (await db.querySingle('SELECT id FROM tasks WHERE name = ?', [candidate])) {
     candidate = `${baseName} ${index}`;
     index += 1;
   }

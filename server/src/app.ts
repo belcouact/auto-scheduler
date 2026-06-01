@@ -60,8 +60,8 @@ export class Server {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
-    this.app.get('/api/status', (_req: Request, res: Response) => {
-      const totals = this.db.querySingle(`
+    this.app.get('/api/status', async (_req: Request, res: Response) => {
+      const totals = await this.db.querySingle(`
         SELECT
           COUNT(*) as total_tasks,
           SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_tasks,
@@ -120,7 +120,7 @@ export class Server {
 
   async start() {
     try {
-      this.db.initialize();
+      await this.db.initialize();
       logger.info('Database initialized');
 
       await this.scheduler.start();
