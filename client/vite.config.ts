@@ -18,4 +18,7 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    include: ['naive-ui', 'vue', 'vue-router', 'pinia'],
+  },
 })
