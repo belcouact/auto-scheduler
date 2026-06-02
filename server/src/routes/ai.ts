@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import fetch from 'node-fetch';
 import { getJson } from 'serpapi';
+import * as cheerio from 'cheerio';
 import { config } from '../config.js';
 import { DatabaseService, TaskRow } from '../database.js';
 import { formatTask, serializeTags } from '../task-utils.js';
@@ -14,23 +15,111 @@ function generateShortId(): string {
   return result;
 }
 
+async function fetchPageContent(url: string, timeout: number = 8000): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return '';
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    $('script, style, nav, header, footer, iframe, noscript, svg, img, .ad, .advertisement, .sidebar, .menu, .navigation').remove();
+
+    let articleContent = $('article').text() || $('main').text() || $('.content').text() || $('.article-body').text() || $('.post-content').text();
+
+    if (!articleContent || articleContent.length < 200) {
+      articleContent = $('body').text();
+    }
+
+    const cleaned = articleContent
+      .replace(/\s+/g, ' ')
+      .replace(/&#?\w+;/g, ' ')
+      .trim();
+
+    return cleaned.length > 3000 ? cleaned.substring(0, 3000) + '...' : cleaned;
+  } catch (error) {
+    console.error(`Failed to fetch content from ${url}:`, error);
+    return '';
+  }
+}
+
+function isNewsRelatedQuery(query: string): boolean {
+  const newsKeywords = ['新闻', '资讯', '大新闻', '最新消息', '动态', '今日', '今天', '昨日', '过去', '小时', '日报', '周报', 'news', 'latest', 'today', 'recent', 'headline'];
+  const lowerQuery = query.toLowerCase();
+  return newsKeywords.some(keyword => lowerQuery.includes(keyword));
+}
+
 async function searchWeb(query: string, apiKey: string): Promise<string> {
   try {
-    const results = await getJson({
-      engine: 'google',
+    const isNewsQuery = isNewsRelatedQuery(query);
+    
+    const searchParams: any = {
+      engine: isNewsQuery ? 'google_news' : 'google',
       q: query,
       api_key: apiKey,
-      num: 8,
-    });
+      num: isNewsQuery ? 15 : 8,
+      hl: 'zh-cn',
+      gl: 'cn',
+    };
+
+    const results = await getJson(searchParams);
 
     const organic = results.organic_results || [];
-    if (organic.length === 0) return '';
+    const newsResults = results.news_results || [];
+    const allResults = isNewsQuery ? [...newsResults, ...organic] : organic;
 
-    const snippets = organic.map((item: any, i: number) => {
-      return `[${i + 1}] ${item.title}\n   URL: ${item.link}\n   ${item.snippet || ''}`;
+    if (allResults.length === 0) return '';
+
+    const contentFetchLimit = Math.min(3, allResults.length);
+    const contentPromises: Promise<{ index: number; title: string; url: string; snippet: string; content: string }>[] = [];
+
+    for (let i = 0; i < contentFetchLimit; i++) {
+      const item = allResults[i];
+      const url = item.link || item.url || '';
+      if (url) {
+        contentPromises.push(
+          fetchPageContent(url).then(content => ({
+            index: i + 1,
+            title: item.title || 'Untitled',
+            url,
+            snippet: item.snippet || '',
+            content,
+          }))
+        );
+      }
+    }
+
+    const fetchedContents = await Promise.all(contentPromises);
+
+    const resultItems = allResults.map((item: any, i: number) => {
+      const fetched = fetchedContents.find(f => f.index === i + 1);
+      const fullContent = fetched?.content || '';
+      
+      let contentBlock = `[${i + 1}] ${item.title || 'Untitled'}\n   URL: ${item.link || item.url || ''}\n   摘要: ${item.snippet || ''}`;
+      
+      if (fullContent && fullContent.length > 100) {
+        contentBlock += `\n   详细内容:\n${fullContent}`;
+      }
+      
+      return contentBlock;
     });
 
-    return `以下是与"${query}"相关的网络搜索结果:\n\n${snippets.join('\n\n')}`;
+    return `以下是通过${isNewsQuery ? 'Google新闻' : 'Google'}搜索"${query}"获得的结果:\n\n${resultItems.join('\n\n')}`;
   } catch (error) {
     console.error('Web search failed:', error);
     return '';

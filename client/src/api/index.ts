@@ -32,6 +32,8 @@ export interface Task {
   popup_title: string | null
   popup_content: string | null
   popup_icon: string | null
+  popup_position: 'center' | 'bottom-right' | null
+  popup_auto_dismiss: number | null
   webhook_url: string | null
   webhook_method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   webhook_headers: Record<string, string> | null
@@ -39,6 +41,8 @@ export interface Task {
   system_action: 'shutdown' | 'lock' | 'hibernate' | null
   ai_search_query: string | null
   ai_search_count: number | null
+  ai_enable_web_search: boolean | null
+  popup_mode: 'fixed' | 'ai' | null
   priority: number
   tags: string[]
   created_at: string

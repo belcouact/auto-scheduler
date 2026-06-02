@@ -136,6 +136,14 @@
         </template>
 
         <template v-if="formData.type === 'popup'">
+          <n-gi :span="2">
+            <n-form-item label="内容模式" path="popup_mode">
+              <n-radio-group v-model:value="formData.popup_mode">
+                <n-radio value="fixed">固定文本</n-radio>
+                <n-radio value="ai">AI 调用（使用下方输入作为 prompt）</n-radio>
+              </n-radio-group>
+            </n-form-item>
+          </n-gi>
           <n-gi>
             <n-form-item label="弹窗标题" path="popup_title">
               <n-input v-model:value="formData.popup_title" placeholder="提醒标题" />
@@ -146,9 +154,45 @@
               <n-input v-model:value="formData.popup_icon" placeholder="emoji 或图标路径" />
             </n-form-item>
           </n-gi>
+          <n-gi>
+            <n-form-item label="弹窗位置" path="popup_position">
+              <n-select v-model:value="formData.popup_position" :options="popupPositionOptions" />
+            </n-form-item>
+          </n-gi>
+          <n-gi>
+            <n-form-item label="自动关闭(秒)" path="popup_auto_dismiss">
+              <n-input-number v-model:value="formData.popup_auto_dismiss" :min="0" :max="300" placeholder="0 表示不自动关闭" />
+            </n-form-item>
+          </n-gi>
+
+          <template v-if="formData.popup_mode === 'ai'">
+            <n-gi>
+              <n-form-item label="结果数量" path="ai_search_count">
+                <n-input-number v-model:value="formData.ai_search_count" :min="1" :max="20" />
+              </n-form-item>
+            </n-gi>
+            <n-gi :span="2">
+              <n-form-item label="联网搜索" path="ai_enable_web_search">
+                <n-switch v-model:value="formData.ai_enable_web_search" />
+                <span style="margin-left: 8px; font-size: 12px; color: #999;">开启后将使用 SerpAPI 搜索网络内容</span>
+              </n-form-item>
+            </n-gi>
+          </template>
+
           <n-gi :span="2">
-            <n-form-item label="弹窗内容" path="popup_content">
-              <n-input v-model:value="formData.popup_content" type="textarea" placeholder="提醒内容" :rows="4" />
+            <n-form-item :label="formData.popup_mode === 'ai' ? 'AI Prompt' : '弹窗内容'" path="popup_content">
+              <n-space vertical style="width: 100%">
+                <n-space style="width: 100%; justify-content: space-between; align-items: center;">
+                  <span style="font-size: 12px; color: #999;">{{ formData.popup_mode === 'ai' ? '将作为 prompt 发送给 AI' : '使用 AI 生成弹窗内容' }}</span>
+                  <n-button size="small" type="primary" ghost @click="showAiGenDialog = true">
+                    <template #icon>
+                      <n-icon><Sparkles /></n-icon>
+                    </template>
+                    AI 生成
+                  </n-button>
+                </n-space>
+                <n-input v-model:value="formData.popup_content" type="textarea" :placeholder="formData.popup_mode === 'ai' ? '例如：AI 领域最新进展' : '提醒内容'" :rows="4" />
+              </n-space>
             </n-form-item>
           </n-gi>
         </template>
@@ -184,29 +228,6 @@
           </n-gi>
         </template>
 
-        <template v-if="formData.type === 'ai_search'">
-          <n-gi :span="2">
-            <n-form-item label="搜索内容" path="ai_search_query">
-              <n-input v-model:value="formData.ai_search_query" type="textarea" placeholder="描述你想搜索的内容，例如：AI领域最新进展、科技新闻头条等" :rows="3" />
-            </n-form-item>
-          </n-gi>
-          <n-gi>
-            <n-form-item label="结果数量" path="ai_search_count">
-              <n-input-number v-model:value="formData.ai_search_count" :min="1" :max="20" placeholder="显示前几条结果" />
-            </n-form-item>
-          </n-gi>
-          <n-gi>
-            <n-form-item label="弹窗标题" path="popup_title">
-              <n-input v-model:value="formData.popup_title" placeholder="留空则自动生成" />
-            </n-form-item>
-          </n-gi>
-          <n-gi :span="2">
-            <n-form-item label="弹窗图标" path="popup_icon">
-              <n-input v-model:value="formData.popup_icon" placeholder="emoji 或留空自动使用🔍" />
-            </n-form-item>
-          </n-gi>
-        </template>
-
         <n-gi>
           <n-form-item label="超时时间(秒)" path="timeout_seconds">
             <n-input-number v-model:value="formData.timeout_seconds" :min="10" :max="3600" />
@@ -230,14 +251,37 @@
       </n-form-item>
     </n-form>
   </n-card>
+
+  <n-modal v-model:show="showAiGenDialog" preset="card" title="AI 生成弹窗内容" style="width: 600px;">
+    <n-space vertical style="width: 100%">
+      <n-input-text
+        v-model:value="aiGenPrompt"
+        type="textarea"
+        placeholder="描述你想要生成的弹窗内容，例如：提醒用户明天上午9点参加项目会议，需要准备PPT和相关资料"
+        :rows="3"
+      />
+      <n-button type="primary" @click="handleAiGenerateContent" :loading="aiGenLoading" style="align-self: flex-end;">
+        生成内容
+      </n-button>
+      <n-divider v-if="aiGenResult" />
+      <div v-if="aiGenResult" style="max-height: 300px; overflow-y: auto; padding: 12px; background: #f5f5f5; border-radius: 8px; white-space: pre-wrap; font-size: 14px; line-height: 1.6;">
+        {{ aiGenResult }}
+      </div>
+      <n-space v-if="aiGenResult" style="justify-content: flex-end;">
+        <n-button @click="showAiGenDialog = false">关闭</n-button>
+        <n-button type="primary" @click="applyAiGeneratedContent">应用到表单</n-button>
+      </n-space>
+    </n-space>
+  </n-modal>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useMessage, NAlert, NCard, NForm, NFormItem, NInput, NGrid, NGi, NSelect, NSlider, NDynamicTags, NDivider, NButton, NSpace, NInputNumber, NDatePicker, NTimePicker, NTag } from 'naive-ui'
+import { useMessage, NAlert, NCard, NForm, NFormItem, NInput, NGrid, NGi, NSelect, NSlider, NDynamicTags, NDivider, NButton, NSpace, NInputNumber, NDatePicker, NTimePicker, NTag, NModal, NIcon, NInput as NInputText, NSwitch } from 'naive-ui'
 import type { FormInst, FormRules } from 'naive-ui'
-import { taskApi, type Task } from '@/api'
+import { taskApi, aiApi, type Task } from '@/api'
+import { Sparkles } from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -246,6 +290,11 @@ const formRef = ref<FormInst | null>(null)
 const submitting = ref(false)
 
 const isEdit = computed(() => !!route.params.id)
+
+const showAiGenDialog = ref(false)
+const aiGenPrompt = ref('')
+const aiGenLoading = ref(false)
+const aiGenResult = ref('')
 
 const formData = ref<Partial<Task>>({
   name: '',
@@ -261,6 +310,8 @@ const formData = ref<Partial<Task>>({
   popup_title: null,
   popup_content: null,
   popup_icon: null,
+  popup_position: 'center',
+  popup_auto_dismiss: 0,
   webhook_url: null,
   webhook_method: 'GET',
   webhook_headers: null,
@@ -268,6 +319,8 @@ const formData = ref<Partial<Task>>({
   system_action: null,
   ai_search_query: null,
   ai_search_count: 10,
+  ai_enable_web_search: true,
+  popup_mode: 'fixed',
   max_retries: 3,
   timeout_seconds: 300,
 })
@@ -391,7 +444,6 @@ const typeOptions = [
   { label: '弹窗提醒', value: 'popup' },
   { label: 'Webhook', value: 'webhook' },
   { label: '系统操作', value: 'system' },
-  { label: 'AI 搜索', value: 'ai_search' },
 ]
 
 const scheduleTypeOptions = [
@@ -415,6 +467,11 @@ const systemActionOptions = [
   { label: '关机', value: 'shutdown' },
   { label: '锁屏', value: 'lock' },
   { label: '休眠', value: 'hibernate' },
+]
+
+const popupPositionOptions = [
+  { label: '屏幕中央', value: 'center' },
+  { label: '右下角', value: 'bottom-right' },
 ]
 
 const scheduleExpressionPlaceholder = computed(() => {
@@ -509,8 +566,17 @@ const rules: FormRules = {
   ai_search_query: {
     trigger: 'blur',
     validator: (_rule, value: string | null) => {
-      if (formData.value.type !== 'ai_search') return true
-      return value ? true : new Error('请输入搜索内容')
+      return true;
+    },
+  },
+  popup_content: {
+    trigger: 'blur',
+    validator: (_rule, value: string | null) => {
+      if (formData.value.type !== 'popup') return true
+      if (formData.value.popup_mode === 'ai') {
+        return value ? true : new Error('请输入 AI Prompt')
+      }
+      return value ? true : new Error('请输入弹窗内容')
     },
   },
 }
@@ -519,10 +585,54 @@ const onTypeChange = (_type: string) => {
   formData.value.script_path = null
   formData.value.popup_title = null
   formData.value.popup_content = null
+  formData.value.popup_icon = null
+  formData.value.popup_position = 'center'
+  formData.value.popup_auto_dismiss = 0
   formData.value.webhook_url = null
   formData.value.system_action = null
   formData.value.ai_search_query = null
   formData.value.ai_search_count = 10
+  formData.value.ai_enable_web_search = true
+  formData.value.popup_mode = 'fixed'
+}
+
+const handleAiGenerateContent = async () => {
+  if (!aiGenPrompt.value.trim()) {
+    message.warning('请输入内容描述')
+    return
+  }
+
+  aiGenLoading.value = true
+  aiGenResult.value = ''
+
+  try {
+    const result = await aiApi.chat([
+      {
+        role: 'system',
+        content: '你是一个专业的弹窗内容生成助手。根据用户的描述，生成简洁、清晰、有吸引力的弹窗提醒内容。内容应该直接、实用，适合在弹窗中显示。使用markdown格式，包含标题、要点和必要的说明。不要包含任何多余的解释。',
+      },
+      {
+        role: 'user',
+        content: `请根据以下描述生成弹窗内容：${aiGenPrompt.value}`,
+      },
+    ])
+
+    aiGenResult.value = result.content || ''
+    message.success('内容生成成功')
+  } catch (error) {
+    message.error('生成失败，请重试')
+    console.error('AI generation error:', error)
+  } finally {
+    aiGenLoading.value = false
+  }
+}
+
+const applyAiGeneratedContent = () => {
+  if (aiGenResult.value) {
+    formData.value.popup_content = aiGenResult.value
+    showAiGenDialog.value = false
+    message.success('已应用生成的内容')
+  }
 }
 
 const skipScheduleTypeWatch = ref(false)

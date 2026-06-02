@@ -20,6 +20,8 @@ export interface TaskRow {
   popup_title: string | null;
   popup_content: string | null;
   popup_icon: string | null;
+  popup_position: string | null;
+  popup_auto_dismiss: number | null;
   webhook_url: string | null;
   webhook_method: string | null;
   webhook_headers: string | null;
@@ -27,6 +29,8 @@ export interface TaskRow {
   system_action: string | null;
   ai_search_query: string | null;
   ai_search_count: number | null;
+  ai_enable_web_search: number | null;
+  popup_mode: string | null;
   priority: number;
   tags: string | null;
   created_at: string;
@@ -90,6 +94,8 @@ export class DatabaseService {
         popup_title TEXT,
         popup_content TEXT,
         popup_icon TEXT,
+        popup_position TEXT DEFAULT 'center',
+        popup_auto_dismiss INTEGER DEFAULT 0,
         webhook_url TEXT,
         webhook_method TEXT DEFAULT 'GET',
         webhook_headers TEXT,
@@ -97,6 +103,8 @@ export class DatabaseService {
         system_action TEXT,
         ai_search_query TEXT,
         ai_search_count INTEGER DEFAULT 10,
+        ai_enable_web_search INTEGER DEFAULT 1,
+        popup_mode TEXT DEFAULT 'fixed',
         priority INTEGER NOT NULL DEFAULT 0,
         tags TEXT DEFAULT '',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -145,6 +153,34 @@ export class DatabaseService {
     }
 
     try {
+      await this.dbRun("ALTER TABLE tasks ADD COLUMN popup_position TEXT DEFAULT 'center'");
+      await this.dbRun('ALTER TABLE tasks ADD COLUMN popup_auto_dismiss INTEGER DEFAULT 0');
+      logger.info('Added popup_position and popup_auto_dismiss columns to tasks table');
+    } catch (e: any) {
+      if (!e.message.includes('duplicate column')) {
+        logger.debug('Popup position columns already exist');
+      }
+    }
+
+    try {
+      await this.dbRun('ALTER TABLE tasks ADD COLUMN ai_enable_web_search INTEGER DEFAULT 1');
+      logger.info('Added ai_enable_web_search column to tasks table');
+    } catch (e: any) {
+      if (!e.message.includes('duplicate column')) {
+        logger.debug('AI web search column already exists');
+      }
+    }
+
+    try {
+      await this.dbRun("ALTER TABLE tasks ADD COLUMN popup_mode TEXT DEFAULT 'fixed'");
+      logger.info('Added popup_mode column to tasks table');
+    } catch (e: any) {
+      if (!e.message.includes('duplicate column')) {
+        logger.debug('Popup mode column already exists');
+      }
+    }
+
+    try {
       const row = await this.dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'") as { sql: string } | null;
 
       if (row && !row.sql.includes("ai_search'")) {
@@ -172,6 +208,8 @@ export class DatabaseService {
             system_action TEXT,
             ai_search_query TEXT,
             ai_search_count INTEGER DEFAULT 10,
+            ai_enable_web_search INTEGER DEFAULT 1,
+            popup_mode TEXT DEFAULT 'fixed',
             priority INTEGER NOT NULL DEFAULT 0,
             tags TEXT DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -183,7 +221,7 @@ export class DatabaseService {
             max_retries INTEGER NOT NULL DEFAULT 3,
             timeout_seconds INTEGER NOT NULL DEFAULT 300
           );
-          INSERT INTO tasks SELECT id, name, description, type, enabled, schedule_type, schedule_expression, script_path, script_args, popup_title, popup_content, popup_icon, webhook_url, webhook_method, webhook_headers, webhook_body, system_action, ai_search_query, ai_search_count, priority, tags, created_at, updated_at, last_run_at, last_run_status, next_run_at, retry_count, max_retries, timeout_seconds FROM tasks_old;
+          INSERT INTO tasks SELECT id, name, description, type, enabled, schedule_type, schedule_expression, script_path, script_args, popup_title, popup_content, popup_icon, popup_position, popup_auto_dismiss, webhook_url, webhook_method, webhook_headers, webhook_body, system_action, ai_search_query, ai_search_count, ai_enable_web_search, popup_mode, priority, tags, created_at, updated_at, last_run_at, last_run_status, next_run_at, retry_count, max_retries, timeout_seconds FROM tasks_old;
           DROP TABLE tasks_old;
           CREATE INDEX IF NOT EXISTS idx_tasks_enabled ON tasks(enabled);
           CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(type);

@@ -27,6 +27,8 @@ const createTaskSchema = z.object({
   popup_title: z.string().nullable().optional(),
   popup_content: z.string().nullable().optional(),
   popup_icon: z.string().nullable().optional(),
+  popup_position: z.enum(['center', 'bottom-right']).default('center').optional(),
+  popup_auto_dismiss: z.number().int().min(0).max(300).default(0).optional(),
   webhook_url: z.string().url().nullable().optional(),
   webhook_method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
   webhook_headers: z.record(z.string()).nullable().optional(),
@@ -34,6 +36,8 @@ const createTaskSchema = z.object({
   system_action: z.enum(['shutdown', 'lock', 'hibernate']).nullable().optional(),
   ai_search_query: z.string().nullable().optional(),
   ai_search_count: z.number().int().min(1).max(20).default(10).optional(),
+  ai_enable_web_search: z.boolean().default(true).optional(),
+  popup_mode: z.enum(['fixed', 'ai']).default('fixed').optional(),
   priority: z.number().int().min(0).max(10).default(0),
   tags: z.array(z.string()).default([]),
   max_retries: z.number().int().min(0).max(10).default(3),
@@ -113,11 +117,11 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
       await db.run(`
         INSERT INTO tasks (
           id, name, description, type, enabled, schedule_type, schedule_expression,
-          script_path, script_args, popup_title, popup_content, popup_icon,
+          script_path, script_args, popup_title, popup_content, popup_icon, popup_position, popup_auto_dismiss,
           webhook_url, webhook_method, webhook_headers, webhook_body,
-          system_action, ai_search_query, ai_search_count, priority, tags, created_at, updated_at,
+          system_action, ai_search_query, ai_search_count, ai_enable_web_search, popup_mode, priority, tags, created_at, updated_at,
           max_retries, timeout_seconds
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         id,
         validated.name,
@@ -131,6 +135,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
         validated.popup_title || null,
         validated.popup_content || null,
         validated.popup_icon || null,
+        validated.popup_position || 'center',
+        validated.popup_auto_dismiss || 0,
         validated.webhook_url || null,
         validated.webhook_method,
         validated.webhook_headers ? JSON.stringify(validated.webhook_headers) : null,
@@ -138,6 +144,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
         validated.system_action || null,
         validated.ai_search_query || null,
         validated.ai_search_count || 10,
+        validated.ai_enable_web_search !== undefined ? (validated.ai_enable_web_search ? 1 : 0) : 1,
+        validated.popup_mode || 'fixed',
         validated.priority,
         tags,
         now,
@@ -220,11 +228,11 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
       await db.run(`
         INSERT INTO tasks (
           id, name, description, type, enabled, schedule_type, schedule_expression,
-          script_path, script_args, popup_title, popup_content, popup_icon,
+          script_path, script_args, popup_title, popup_content, popup_icon, popup_position, popup_auto_dismiss,
           webhook_url, webhook_method, webhook_headers, webhook_body,
-          system_action, ai_search_query, ai_search_count, priority, tags, created_at, updated_at,
+          system_action, ai_search_query, ai_search_count, ai_enable_web_search, popup_mode, priority, tags, created_at, updated_at,
           last_run_at, last_run_status, next_run_at, retry_count, max_retries, timeout_seconds
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         id,
         duplicateName,
@@ -238,6 +246,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
         sourceTask.popup_title,
         sourceTask.popup_content,
         sourceTask.popup_icon,
+        sourceTask.popup_position || 'center',
+        sourceTask.popup_auto_dismiss || 0,
         sourceTask.webhook_url,
         sourceTask.webhook_method,
         sourceTask.webhook_headers,
@@ -245,6 +255,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
         sourceTask.system_action,
         sourceTask.ai_search_query,
         sourceTask.ai_search_count,
+        sourceTask.ai_enable_web_search !== undefined ? sourceTask.ai_enable_web_search : 1,
+        sourceTask.popup_mode || 'fixed',
         sourceTask.priority,
         sourceTask.tags,
         now,

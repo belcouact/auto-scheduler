@@ -3,6 +3,8 @@ import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import fetch from 'node-fetch';
 import { getJson } from 'serpapi';
+import * as cheerio from 'cheerio';
+import { marked } from 'marked';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -16,6 +18,55 @@ const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 interface ScheduledTask {
   task: cron.ScheduledTask;
   id: string;
+}
+
+async function fetchPageContent(url: string, timeout: number = 10000): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return '';
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    $('script, style, nav, header, footer, iframe, noscript, svg, img, .ad, .advertisement, .sidebar, .menu, .navigation').remove();
+
+    let articleContent = $('article').text() || $('main').text() || $('.content').text() || $('.article-body').text() || $('.post-content').text();
+
+    if (!articleContent || articleContent.length < 200) {
+      articleContent = $('body').text();
+    }
+
+    const cleaned = articleContent
+      .replace(/\s+/g, ' ')
+      .replace(/&#?\w+;/g, ' ')
+      .trim();
+
+    return cleaned.length > 3000 ? cleaned.substring(0, 3000) + '...' : cleaned;
+  } catch (error) {
+    logger.warn(`Failed to fetch content from ${url}: ${error}`);
+    return '';
+  }
+}
+
+function isNewsRelatedQuery(query: string): boolean {
+  const newsKeywords = ['新闻', '资讯', '大新闻', '最新消息', '动态', '今日', '今天', '昨日', '过去', '小时', '日报', '周报', 'news', 'latest', 'today', 'recent', 'headline'];
+  const lowerQuery = query.toLowerCase();
+  return newsKeywords.some(keyword => lowerQuery.includes(keyword));
 }
 
 export class SchedulerService {
@@ -281,10 +332,114 @@ export class SchedulerService {
     const title = task.popup_title || 'Auto Scheduler Alert';
     const content = task.popup_content || '';
     const icon = task.popup_icon || 'ⓘ';
+    const position = task.popup_position || 'center';
+    const autoDismiss = task.popup_auto_dismiss || 0;
+    const popupMode = task.popup_mode || 'fixed';
 
-    await this.showNativePopup(title, content, icon);
+    logger.info(`executePopup: position="${position}", autoDismiss=${autoDismiss}, popupMode="${popupMode}"`);
 
-    return content;
+    if (popupMode === 'ai') {
+      const aiContent = await this.executeAIPopupContent(task);
+      await this.showPopupWithContentNative(title, aiContent, icon, position, autoDismiss);
+      return aiContent;
+    } else {
+      await this.showPopupWithContentNative(title, content, icon, position, autoDismiss);
+      return content;
+    }
+  }
+
+  private async executeAIPopupContent(task: TaskRow): Promise<string> {
+    const userPrompt = task.popup_content || task.ai_search_query;
+    if (!userPrompt) {
+      throw new Error('Popup content or AI search query is required for AI mode');
+    }
+
+    const aiConfig = await this.getAiConfig();
+    if (!aiConfig.aiApiUrl || !aiConfig.aiApiKey) {
+      throw new Error('AI API not configured. Please configure AI API URL and API key in settings.');
+    }
+
+    const enableWebSearch = task.ai_enable_web_search !== 0;
+    const searchCount = task.ai_search_count || 10;
+    let searchResultsText = '';
+
+    if (enableWebSearch) {
+      if (!aiConfig.serpapiKey) {
+        logger.warn('SerpAPI key not configured, skipping web search for popup');
+      } else {
+        const isNewsQuery = isNewsRelatedQuery(userPrompt);
+        try {
+          const searchParams: any = {
+            engine: isNewsQuery ? 'google_news' : 'google',
+            q: userPrompt,
+            api_key: aiConfig.serpapiKey,
+            num: isNewsQuery ? Math.min(searchCount, 15) : searchCount,
+            hl: 'zh-cn',
+            gl: 'cn',
+          };
+          const results = await getJson(searchParams);
+          const organic = results.organic_results || [];
+          const newsResults = results.news_results || [];
+          const allResults = isNewsQuery ? [...newsResults, ...organic] : organic;
+
+          if (allResults.length > 0) {
+            const resultItems = allResults.map((item: any, i: number) => 
+              `[${i + 1}] ${item.title || 'Untitled'}\n   摘要: ${item.snippet || ''}`
+            );
+            searchResultsText = `搜索"${userPrompt}"结果:\n\n${resultItems.join('\n\n')}`;
+          }
+        } catch (error) {
+          logger.warn(`Web search failed for popup: ${error}`);
+        }
+      }
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), task.timeout_seconds * 1000);
+
+    try {
+      const systemPrompt = `You are a helpful assistant. Provide concise, well-organized content based on the user's request. Do NOT include URLs, technical metadata, or source references. Use clean numbered list format.`;
+      
+      const messages: any[] = [
+        { role: 'system', content: systemPrompt },
+      ];
+
+      if (searchResultsText) {
+        messages.push({
+          role: 'system',
+          content: `参考信息:\n\n${searchResultsText}`,
+        });
+      }
+
+      messages.push({
+        role: 'user',
+        content: `请以简洁的格式（每项：标题 + 2-3句话摘要）回应以下请求：\n\n${userPrompt}\n\n最多${searchCount}项。不要包含URL或来源链接。`,
+      });
+
+      const response = await fetch(`${aiConfig.aiApiUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${aiConfig.aiApiKey}`,
+        },
+        body: JSON.stringify({
+          model: aiConfig.aiModel,
+          messages,
+          temperature: 0.5,
+          max_tokens: 4000,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`AI API error: ${response.status}`);
+      }
+
+      const data = await response.json() as any;
+      return data.choices[0].message.content || 'No content returned';
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   private async executeWebhook(task: TaskRow): Promise<string> {
@@ -352,65 +507,149 @@ export class SchedulerService {
 
     const searchQuery = task.ai_search_query;
     const searchCount = task.ai_search_count || 10;
+    const enableWebSearch = task.ai_enable_web_search !== 0;
+    const position = task.popup_position || 'center';
+    const autoDismiss = task.popup_auto_dismiss || 0;
 
-    if (!aiConfig.serpapiKey) {
-      throw new Error('AI search tasks require SerpAPI key. Please configure it in Settings.');
-    }
+    logger.info(`executeAISearch: enableWebSearch=${enableWebSearch} (raw=${task.ai_enable_web_search}), position="${position}" (raw="${task.popup_position}"), autoDismiss=${autoDismiss}`);
 
     let searchResultsText = '';
 
-    try {
-      const results = await getJson({
-        engine: 'google',
-        q: searchQuery,
-        api_key: aiConfig.serpapiKey,
-        num: searchCount,
-      });
-
-      const organic = results.organic_results || [];
-      logger.info(`SerpAPI returned ${organic.length} results for query: "${searchQuery}"`);
-      if (organic.length > 0) {
-        const snippets = organic.map((item: any, i: number) => {
-          return `[${i + 1}] ${item.title}\n   URL: ${item.link}\n   ${item.snippet || ''}`;
-        });
-        searchResultsText = `以下是与"${searchQuery}"相关的网络搜索结果:\n\n${snippets.join('\n\n')}`;
-        logger.info(`Search results text length: ${searchResultsText.length} chars`);
-      } else {
-        logger.warn(`SerpAPI returned no organic results for: "${searchQuery}"`);
+    if (enableWebSearch) {
+      if (!aiConfig.serpapiKey) {
+        throw new Error('AI search tasks require SerpAPI key. Please configure it in Settings.');
       }
-    } catch (error) {
-      logger.error(`SerpAPI search failed for "${searchQuery}": ${error}`);
-      throw new Error(`Web search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      const isNewsQuery = isNewsRelatedQuery(searchQuery);
+
+      try {
+        const searchParams: any = {
+          engine: isNewsQuery ? 'google_news' : 'google',
+          q: searchQuery,
+          api_key: aiConfig.serpapiKey,
+          num: isNewsQuery ? Math.min(searchCount, 15) : searchCount,
+          hl: 'zh-cn',
+          gl: 'cn',
+        };
+
+        logger.info(`Executing ${isNewsQuery ? 'Google News' : 'Google'} search for: "${searchQuery}"`);
+        const results = await getJson(searchParams);
+
+        const organic = results.organic_results || [];
+        const newsResults = results.news_results || [];
+        const allResults = isNewsQuery ? [...newsResults, ...organic] : organic;
+
+        logger.info(`SerpAPI returned ${organic.length} organic + ${newsResults.length} news results for: "${searchQuery}"`);
+
+        if (allResults.length > 0) {
+          const contentFetchLimit = Math.min(5, allResults.length);
+          const contentPromises: Promise<{ index: number; title: string; url: string; snippet: string; content: string }>[] = [];
+
+          for (let i = 0; i < contentFetchLimit; i++) {
+            const item = allResults[i];
+            const url = item.link || item.url || '';
+            if (url) {
+              contentPromises.push(
+                fetchPageContent(url).then(content => ({
+                  index: i + 1,
+                  title: item.title || 'Untitled',
+                  url,
+                  snippet: item.snippet || '',
+                  content,
+                }))
+              );
+            }
+          }
+
+          const fetchedContents = await Promise.all(contentPromises);
+
+          const resultItems = allResults.map((item: any, i: number) => {
+            const fetched = fetchedContents.find(f => f.index === i + 1);
+            const fullContent = fetched?.content || '';
+            
+            let contentBlock = `[${i + 1}] ${item.title || 'Untitled'}\n   URL: ${item.link || item.url || ''}\n   摘要: ${item.snippet || ''}`;
+            
+            if (fullContent && fullContent.length > 100) {
+              contentBlock += `\n   详细内容:\n${fullContent}`;
+            }
+            
+            return contentBlock;
+          });
+
+          searchResultsText = `以下是通过${isNewsQuery ? 'Google新闻' : 'Google'}搜索"${searchQuery}"获得的结果:\n\n${resultItems.join('\n\n')}`;
+          logger.info(`Search results text length: ${searchResultsText.length} chars (with full content)`);
+        } else {
+          logger.warn(`SerpAPI returned no results for: "${searchQuery}"`);
+        }
+      } catch (error) {
+        logger.error(`SerpAPI search failed for "${searchQuery}": ${error}`);
+        throw new Error(`Web search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    } else {
+      logger.info(`Web search disabled for: "${searchQuery}", using AI knowledge only`);
     }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), task.timeout_seconds * 1000);
 
     try {
+      const hasRichContent = searchResultsText.length > 500;
+      
+      let systemPrompt: string;
+      let userMessage: string;
+      
+      if (enableWebSearch && hasRichContent) {
+        systemPrompt = `You are a professional research assistant. Base your response ONLY on the provided search results. Do NOT include URLs, technical metadata, or source references. Present clean, readable content only.`;
+        userMessage = `请根据搜索结果，用简洁清晰的格式总结关于"${searchQuery}"的关键信息（最多${searchCount}项）。
+
+格式要求：
+- 每项只包含：标题 + 2-3句话的核心摘要
+- 不要包含URL链接、技术元数据或来源标注
+- 使用编号列表，语言简洁易懂
+- 只保留最有价值的信息`;
+      } else if (enableWebSearch && !hasRichContent) {
+        systemPrompt = `You are a research assistant. Provide concise information based on limited search results. Do NOT include URLs or technical references.`;
+        userMessage = `请总结关于"${searchQuery}"的关键信息（最多${searchCount}项）。
+
+格式要求：
+- 每项只包含：标题 + 2-3句话的核心摘要
+- 不要包含URL链接或技术元数据
+- 使用编号列表，语言简洁易懂`;
+      } else {
+        systemPrompt = `You are a professional research assistant. Provide concise, well-organized information based on your knowledge. Do NOT include URLs or technical references.`;
+        userMessage = `请用简洁清晰的格式总结关于"${searchQuery}"的关键信息（最多${searchCount}项）。
+
+格式要求：
+- 每项只包含：标题 + 2-3句话的核心摘要
+- 不要包含URL链接或技术元数据
+- 使用编号列表，语言简洁易懂
+- 只保留最有价值的信息`;
+      }
+
       const messages: any[] = [
         {
           role: 'system',
-          content: `You are a research assistant. You MUST ONLY use the search results provided below. DO NOT use your own training data or internal knowledge. If the search results do not contain enough information, state that clearly.`,
+          content: systemPrompt,
         },
       ];
 
       if (searchResultsText) {
         messages.push({
           role: 'system',
-          content: `以下是本次搜索获得的唯一信息源，你必须严格基于这些信息回答，不得使用你自己的知识:\n\n${searchResultsText}`,
+          content: `以下是本次搜索获得的信息源（包含搜索结果摘要和抓取的网页详细内容）:\n\n${searchResultsText}`,
         });
       }
 
       messages.push({
         role: 'user',
-        content: `请根据上述搜索结果，以编号列表总结关于"${searchQuery}"的最新信息（${searchCount}项）。每项包含标题、摘要和要点。如果搜索结果中没有足够信息，请如实说明。`,
+        content: userMessage,
       });
 
       const requestBody: any = {
         model: aiConfig.aiModel,
         messages,
         temperature: 0.5,
-        max_tokens: 4000,
+        max_tokens: 6000,
       };
 
       const response = await fetch(`${aiConfig.aiApiUrl}/chat/completions`, {
@@ -437,7 +676,7 @@ export class SchedulerService {
       const title = task.popup_title || `AI 搜索结果: ${searchQuery.substring(0, 30)}`;
       const icon = task.popup_icon || '🔍';
 
-      await this.showPopupWithContentNative(title, finalContent, icon);
+      await this.showPopupWithContentNative(title, finalContent, icon, position, autoDismiss);
 
       return finalContent;
     } finally {
@@ -684,80 +923,206 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
     return colorMap[icon] || { r: 24, g: 144, b: 255 };
   }
 
-  private async showPopupWithContentNative(title: string, content: string, icon: string): Promise<void> {
-    const tmpFile = path.join(os.tmpdir(), `popup_${randomUUID()}.txt`);
-    fs.writeFileSync(tmpFile, content, 'utf-8');
+  private async showPopupWithContentNative(title: string, content: string, icon: string, position: string = 'center', autoDismissSeconds: number = 0): Promise<void> {
+    const tmpFile = path.join(os.tmpdir(), `popup_${randomUUID()}.html`);
 
-    const psCommand = `
-$content = [System.IO.File]::ReadAllText('${tmpFile}')
+    const htmlContent = marked.parse(content) as string;
 
-# Enable high DPI support + visual styles
-Add-Type -TypeDefinition '
-using System;
-using System.Runtime.InteropServices;
-public class DPIHelper {
-  [DllImport("user32.dll")]
-  public static extern bool SetProcessDPIAware();
-}
-'
-[DPIHelper]::SetProcessDPIAware() | Out-Null
+    const fadeAnimation = autoDismissSeconds > 0 ? `
+      <style>
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+        body { animation: fadeIn 0.5s ease-out; }
+        body.fade-out { animation: fadeOut 0.5s ease-in forwards; }
+      </style>
+      <script>
+        setTimeout(function() {
+          document.body.classList.add('fade-out');
+          setTimeout(function() { window.close(); }, 500);
+        }, ${autoDismissSeconds * 1000});
+      </script>
+    ` : `
+      <style>
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        body { animation: fadeIn 0.5s ease-out; }
+      </style>
+    `;
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
+    const fullHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    font-size: 14px;
+    line-height: 1.8;
+    color: #1a1a1a;
+    background: #ffffff;
+    padding: 20px 24px;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    margin: 16px 0 8px 0;
+    font-weight: 600;
+    color: #0f172a;
+  }
+  h1 { font-size: 22px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }
+  h2 { font-size: 18px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+  h3 { font-size: 16px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  li > ul, li > ol { margin: 2px 0 2px 16px; }
+  code {
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    color: #e11d48;
+  }
+  pre {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    overflow-x: auto;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: #334155;
+  }
+  blockquote {
+    border-left: 4px solid #0d9488;
+    background: #f0fdfa;
+    padding: 12px 16px;
+    margin: 12px 0;
+    border-radius: 0 8px 8px 0;
+    color: #475569;
+  }
+  hr {
+    border: none;
+    border-top: 1px solid #e2e8f0;
+    margin: 16px 0;
+  }
+  a { color: #0d9488; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { font-weight: 600; color: #0f172a; }
+  em { font-style: italic; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+  }
+  th, td {
+    border: 1px solid #e2e8f0;
+    padding: 8px 12px;
+    text-align: left;
+  }
+  th { background: #f8fafc; font-weight: 600; }
+  tr:nth-child(even) { background: #fafafa; }
+</style>
+${fadeAnimation}
+</head>
+<body>
+${htmlContent}
+</body>
+</html>`;
 
-Add-Type -TypeDefinition '
-using System;
-using System.Runtime.InteropServices;
-public class NativeMethods {
-  [DllImport("user32.dll")]
-  public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-'
-$form = New-Object System.Windows.Forms.Form
-$form.Text = '${title.replace(/'/g, "''")}'
-$form.ClientSize = New-Object System.Drawing.Size(1200, 900)
-$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$form.TopMost = $true
-$form.MinimizeBox = $false
-$form.MaximizeBox = $false
-$form.BackColor = [System.Drawing.Color]::White
+    fs.writeFileSync(tmpFile, fullHtml, 'utf-8');
 
-$layoutTable = New-Object System.Windows.Forms.TableLayoutPanel
-$layoutTable.Dock = [System.Windows.Forms.DockStyle]::Fill
-$layoutTable.ColumnCount = 1
-$layoutTable.RowCount = 2
-$layoutTable.RowStyles.Clear()
-$layoutTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80)))
-$layoutTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-$layoutTable.Padding = New-Object System.Windows.Forms.Padding(15)
-$form.Controls.Add($layoutTable)
+    const safeTitle = title.replace(/'/g, "''").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeIcon = icon.replace(/'/g, "''");
+    const escapedTmpFile = tmpFile.replace(/\\/g, '/');
+    const escapedTmpFileDouble = tmpFile.replace(/\\/g, '\\\\');
 
-$iconLabel = New-Object System.Windows.Forms.Label
-$iconLabel.Text = '${icon.replace(/'/g, "''")}'
-$iconLabel.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 36)
-$iconLabel.ForeColor = [System.Drawing.Color]::FromArgb(24, 144, 255)
-$iconLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$iconLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
-$layoutTable.Controls.Add($iconLabel, 0, 0)
+    const isBottomRight = position && position.trim().toLowerCase() === 'bottom-right';
+    logger.info(`Popup position: "${position}", isBottomRight: ${isBottomRight}`);
+    const formPosition = isBottomRight
+      ? [
+          '$screen = [System.Windows.Forms.Screen]::PrimaryScreen',
+          '$workArea = $screen.WorkingArea',
+          '$formWidth = 500',
+          '$formHeight = 400',
+          `$form.Left = $workArea.Right - $formWidth - 20`,
+          `$form.Top = $workArea.Bottom - $formHeight - 20`,
+          `$form.ClientSize = New-Object System.Drawing.Size($formWidth, $formHeight)`,
+        ].join('\n')
+      : [
+          '$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen',
+          '$form.ClientSize = New-Object System.Drawing.Size(1200, 900)',
+        ].join('\n');
 
-$textBox = New-Object System.Windows.Forms.RichTextBox
-$textBox.Text = $content
-$textBox.Font = New-Object System.Drawing.Font('Microsoft YaHei', 11, [System.Drawing.FontStyle]::Regular)
-$textBox.ReadOnly = $true
-$textBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
-$textBox.BackColor = [System.Drawing.Color]::White
-$textBox.Dock = [System.Windows.Forms.DockStyle]::Fill
-$textBox.ScrollBars = [System.Windows.Forms.RichTextBoxScrollBars]::Vertical
-$layoutTable.Controls.Add($textBox, 0, 1)
-
-$form.Add_Shown({ $form.Activate(); [NativeMethods]::SetForegroundWindow($form.Handle) })
-$form.KeyPreview = $true
-$form.Add_KeyDown({ if ($_.KeyCode -eq 'Escape') { $form.Close() } })
-$textBox.Add_DoubleClick({ $form.Close() })
-[System.Windows.Forms.Application]::Run($form)
-Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
-`;
+    const psCommand = [
+      '# Enable high DPI support',
+      "Add-Type -TypeDefinition '",
+      'using System;',
+      'using System.Runtime.InteropServices;',
+      'public class DPIHelper {',
+      '  [DllImport("user32.dll")]',
+      '  public static extern bool SetProcessDPIAware();',
+      '}',
+      "'",
+      '[DPIHelper]::SetProcessDPIAware() | Out-Null',
+      '',
+      'Add-Type -AssemblyName System.Windows.Forms',
+      'Add-Type -AssemblyName System.Drawing',
+      '[System.Windows.Forms.Application]::EnableVisualStyles()',
+      '',
+      "Add-Type -TypeDefinition '",
+      'using System;',
+      'using System.Runtime.InteropServices;',
+      'public class NativeMethods {',
+      '  [DllImport("user32.dll")]',
+      '  public static extern bool SetForegroundWindow(IntPtr hWnd);',
+      '}',
+      "'",
+      '',
+      '$form = New-Object System.Windows.Forms.Form',
+      `$form.Text = '${safeTitle}'`,
+      formPosition,
+      '$form.TopMost = $true',
+      '$form.MinimizeBox = $false',
+      '$form.MaximizeBox = $false',
+      '$form.BackColor = [System.Drawing.Color]::FromArgb(255, 255, 255)',
+      '$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::SizableToolWindow',
+      '',
+      '$layoutTable = New-Object System.Windows.Forms.TableLayoutPanel',
+      '$layoutTable.Dock = [System.Windows.Forms.DockStyle]::Fill',
+      '$layoutTable.ColumnCount = 1',
+      '$layoutTable.RowCount = 2',
+      '$layoutTable.RowStyles.Clear()',
+      '$layoutTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 80)))',
+      '$layoutTable.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))',
+      '$layoutTable.Padding = New-Object System.Windows.Forms.Padding(15)',
+      '$form.Controls.Add($layoutTable)',
+      '',
+      '$iconLabel = New-Object System.Windows.Forms.Label',
+      `$iconLabel.Text = '${safeIcon}'`,
+      "$iconLabel.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 36)",
+      '$iconLabel.ForeColor = [System.Drawing.Color]::FromArgb(24, 144, 255)',
+      '$iconLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter',
+      '$iconLabel.Dock = [System.Windows.Forms.DockStyle]::Fill',
+      '$layoutTable.Controls.Add($iconLabel, 0, 0)',
+      '',
+      '$browser = New-Object System.Windows.Forms.WebBrowser',
+      '$browser.ScriptErrorsSuppressed = $true',
+      '$browser.ScrollBarsEnabled = $true',
+      '$browser.Dock = [System.Windows.Forms.DockStyle]::Fill',
+      `$browser.Navigate('file://${escapedTmpFile}')`,
+      '$layoutTable.Controls.Add($browser, 0, 1)',
+      '',
+      '$form.Add_Shown({ $form.Activate(); [NativeMethods]::SetForegroundWindow($form.Handle) })',
+      '$form.KeyPreview = $true',
+      "$form.Add_KeyDown({ if ($_.KeyCode -eq 'Escape') { $form.Close() } })",
+      '$browser.Add_DoubleClick({ $form.Close() })',
+      '[System.Windows.Forms.Application]::Run($form)',
+      `Remove-Item -Path '${escapedTmpFileDouble}' -Force -ErrorAction SilentlyContinue`,
+    ].join('\n');
 
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('powershell.exe', [
