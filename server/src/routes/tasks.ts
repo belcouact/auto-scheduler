@@ -18,7 +18,7 @@ import cron from 'node-cron';
 const createTaskSchema = z.object({
   name: z.string().min(1).max(200),
   description: z.string().max(1000).default(''),
-  type: z.enum(['script', 'popup', 'webhook', 'system', 'ai_search']),
+  type: z.enum(['script', 'popup', 'webhook', 'system']),
   enabled: z.boolean().default(true),
   schedule_type: z.enum(['once', 'cron', 'daily', 'weekly', 'monthly', 'hourly']),
   schedule_expression: z.string().min(1),
@@ -27,17 +27,17 @@ const createTaskSchema = z.object({
   popup_title: z.string().nullable().optional(),
   popup_content: z.string().nullable().optional(),
   popup_icon: z.string().nullable().optional(),
-  popup_position: z.enum(['center', 'bottom-right']).default('center').optional(),
-  popup_auto_dismiss: z.number().int().min(0).max(300).default(0).optional(),
-  webhook_url: z.string().url().nullable().optional(),
+  popup_position: z.enum(['center', 'bottom-right']).default('center').nullable().optional(),
+  popup_auto_dismiss: z.number().int().min(0).max(300).default(0).nullable().optional(),
+  webhook_url: z.string().url().nullable().optional().or(z.literal('')),
   webhook_method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
   webhook_headers: z.record(z.string()).nullable().optional(),
   webhook_body: z.string().nullable().optional(),
   system_action: z.enum(['shutdown', 'lock', 'hibernate']).nullable().optional(),
   ai_search_query: z.string().nullable().optional(),
-  ai_search_count: z.number().int().min(1).max(20).default(10).optional(),
+  ai_search_count: z.number().int().min(1).max(20).default(10).nullable().optional(),
   ai_enable_web_search: z.boolean().default(true).optional(),
-  popup_mode: z.enum(['fixed', 'ai']).default('fixed').optional(),
+  popup_mode: z.enum(['fixed', 'ai']).default('fixed').nullable().optional(),
   priority: z.number().int().min(0).max(10).default(0),
   tags: z.array(z.string()).default([]),
   max_retries: z.number().int().min(0).max(10).default(3),
@@ -45,6 +45,29 @@ const createTaskSchema = z.object({
 });
 
 const updateTaskSchema = createTaskSchema.partial();
+
+function sanitizeUpdateData(body: any) {
+  const allowedKeys = new Set(Object.keys(createTaskSchema.shape));
+  const result: any = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (allowedKeys.has(key)) {
+      if (key === 'ai_enable_web_search' && typeof value === 'number') {
+        result[key] = Boolean(value);
+      } else if (key === 'webhook_url' && value === '') {
+        result[key] = null;
+      } else {
+        result[key] = value;
+      }
+    }
+  }
+  if (result.type === 'ai_search') {
+    result.type = 'popup';
+    if (!result.popup_mode) result.popup_mode = 'ai';
+    if (!result.popup_content) result.popup_content = result.ai_search_query || result.description || '';
+    if (!result.popup_title) result.popup_title = result.name || '';
+  }
+  return result;
+}
 const batchUpdateSchema = z.object({
   ids: z.array(z.string().min(1)).min(1),
   enabled: z.boolean(),
@@ -162,6 +185,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
       res.status(201).json({ data: formatTask(task) });
     } catch (error) {
       if (error instanceof z.ZodError) {
+        console.error('Task update validation error:', JSON.stringify(error.errors, null, 2));
+        console.error('Request body:', JSON.stringify(req.body, null, 2));
         next(new ValidationError('Invalid task data', { errors: error.errors }));
       } else {
         next(error);
@@ -172,7 +197,8 @@ export function taskRouter(db: DatabaseService, scheduler: SchedulerService) {
   router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
       await getTaskById(db, req.params.id);
-      const validated = updateTaskSchema.parse(req.body);
+      const sanitized = sanitizeUpdateData(req.body);
+      const validated = updateTaskSchema.parse(sanitized);
       validateTaskSemantics(validated);
       const now = new Date().toISOString();
 

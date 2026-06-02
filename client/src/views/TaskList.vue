@@ -106,6 +106,7 @@ const loading = ref(false)
 const searchText = ref('')
 const filterType = ref<string | null>(null)
 const filterEnabled = ref<string | null>(null)
+const executingTasks = ref<Set<string>>(new Set())
 
 const showAiCreate = ref(false)
 const aiDescription = ref('')
@@ -120,7 +121,6 @@ const typeOptions = [
   { label: '弹窗', value: 'popup' },
   { label: 'Webhook', value: 'webhook' },
   { label: '系统', value: 'system' },
-  { label: 'AI 搜索', value: 'ai_search' },
 ]
 
 const statusOptions = [
@@ -174,11 +174,15 @@ const toggleEnabled = async (task: Task) => {
 }
 
 const executeTask = async (task: Task) => {
+  if (executingTasks.value.has(task.id)) return
+  executingTasks.value.add(task.id)
   try {
     await taskApi.execute(task.id)
     message.success('任务已执行')
   } catch (error) {
     message.error('执行失败')
+  } finally {
+    executingTasks.value.delete(task.id)
   }
 }
 
@@ -378,8 +382,16 @@ const columns = [
           default: () => '编辑',
         }),
         h(NTooltip, null, {
-          trigger: () => h(NButton, { size: 'small', quaternary: true, circle: true, type: 'info', onClick: () => executeTask(row) }, { icon: () => h(NIcon, null, { default: () => h(PlayIcon) }) }),
-          default: () => '执行',
+          trigger: () => h(NButton, {
+            size: 'small',
+            quaternary: true,
+            circle: true,
+            type: executingTasks.value.has(row.id) ? 'warning' : 'info',
+            loading: executingTasks.value.has(row.id),
+            disabled: executingTasks.value.has(row.id),
+            onClick: () => executeTask(row),
+          }, { icon: () => h(NIcon, null, { default: () => h(PlayIcon) }) }),
+          default: () => executingTasks.value.has(row.id) ? '执行中...' : '执行',
         }),
       ],
     }),

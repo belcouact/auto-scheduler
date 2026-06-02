@@ -266,14 +266,13 @@ const formatDateTime = (value: string | null | undefined) => {
 }
 
 const typeLabel = (type: Task['type']) => {
-  const labels: Record<Task['type'], string> = {
+  const labels: Record<string, string> = {
     script: 'Script',
     popup: 'Popup',
     webhook: 'Webhook',
     system: 'System',
-    ai_search: 'AI Search',
   }
-  return labels[type]
+  return labels[type] || type
 }
 
 const scheduleLabel = (task: Task) => {
@@ -457,7 +456,6 @@ onMounted(refreshAll)
 .dot-popup { background: #F59E0B; }
 .dot-webhook { background: #0EA5E9; }
 .dot-system { background: #8B5CF6; }
-.dot-ai_search { background: #10B981; }
 
 .error-icon {
   display: flex;

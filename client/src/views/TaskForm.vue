@@ -137,11 +137,14 @@
 
         <template v-if="formData.type === 'popup'">
           <n-gi :span="2">
-            <n-form-item label="内容模式" path="popup_mode">
-              <n-radio-group v-model:value="formData.popup_mode">
-                <n-radio value="fixed">固定文本</n-radio>
-                <n-radio value="ai">AI 调用（使用下方输入作为 prompt）</n-radio>
-              </n-radio-group>
+            <n-form-item label="AI 处理" path="popup_mode">
+              <n-space style="width: 100%">
+                <n-switch v-model:value="formData.popup_mode" checked-value="ai" unchecked-value="fixed">
+                  <template #checked>AI 处理</template>
+                  <template #unchecked>直接显示</template>
+                </n-switch>
+                <span style="font-size: 12px; color: #999;">{{ formData.popup_mode === 'ai' ? '将使用 AI 处理弹窗内容' : '直接显示下方输入的弹窗内容' }}</span>
+              </n-space>
             </n-form-item>
           </n-gi>
           <n-gi>
@@ -672,7 +675,7 @@ const handleSubmit = async () => {
     await formRef.value?.validate()
     submitting.value = true
 
-    const data = { ...formData.value }
+    const data: any = { ...formData.value }
 
     if (webhookHeadersStr.value) {
       try {
@@ -683,7 +686,29 @@ const handleSubmit = async () => {
       }
     }
 
+    delete data.id
+    delete data.created_at
+    delete data.updated_at
+    delete data.last_run_at
+    delete data.last_run_status
+    delete data.next_run_at
+    delete data.retry_count
+
+    if (data.type === 'ai_search') {
+      data.type = 'popup'
+      if (!data.popup_mode) {
+        data.popup_mode = 'ai'
+      }
+      if (!data.popup_content) {
+        data.popup_content = data.ai_search_query || data.description || ''
+      }
+      if (!data.popup_title) {
+        data.popup_title = data.name
+      }
+    }
+
     if (isEdit.value) {
+      console.log('Updating task data:', JSON.stringify(data, null, 2))
       await taskApi.update(route.params.id as string, data)
       message.success('任务已更新')
     } else {

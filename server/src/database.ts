@@ -181,9 +181,61 @@ export class DatabaseService {
     }
 
     try {
-      const row = await this.dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'") as { sql: string } | null;
+      const tasksOldExists = await this.dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks_old'") as any;
+      if (tasksOldExists) {
+        logger.info('Found leftover tasks_old table, cleaning up...');
+        const tasksExists = await this.dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'") as any;
+        if (!tasksExists) {
+          await this.dbExec('ALTER TABLE tasks_old RENAME TO tasks');
+          logger.info('Restored tasks table from tasks_old');
+        } else {
+          await this.dbExec('DROP TABLE IF EXISTS tasks_old');
+          logger.info('Dropped leftover tasks_old table');
+        }
+      }
+    } catch (e: any) {
+      logger.debug('Cleanup tasks_old failed: ' + e.message);
+    }
 
-      if (row && !row.sql.includes("ai_search'")) {
+    try {
+      const histRow = await this.dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='execution_history'") as { sql: string } | null;
+      if (histRow && histRow.sql.includes('tasks_old')) {
+        logger.info('Fixing execution_history foreign key reference...');
+        await this.dbExec('PRAGMA foreign_keys = OFF');
+        await this.dbExec(`
+          BEGIN TRANSACTION;
+          ALTER TABLE execution_history RENAME TO execution_history_old;
+          CREATE TABLE execution_history (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            task_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            output TEXT,
+            error_message TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            duration_ms INTEGER,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+          );
+          INSERT INTO execution_history SELECT * FROM execution_history_old;
+          DROP TABLE execution_history_old;
+          CREATE INDEX IF NOT EXISTS idx_history_task_id ON execution_history(task_id);
+          CREATE INDEX IF NOT EXISTS idx_history_started_at ON execution_history(started_at);
+          COMMIT;
+        `);
+        await this.dbExec('PRAGMA foreign_keys = ON');
+        logger.info('Fixed execution_history foreign key to reference tasks instead of tasks_old');
+      }
+    } catch (e: any) {
+      logger.error('Failed to fix execution_history foreign key: ' + e.message);
+      try {
+        await this.dbExec('ROLLBACK');
+      } catch {}
+    }
+
+    try {
+      const row = await this.dbGet("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'") as { sql: string } | null;
+      if (row && row.sql.includes("'ai_search'")) {
         await this.dbExec('PRAGMA foreign_keys = OFF');
         await this.dbExec(`
           BEGIN TRANSACTION;
@@ -192,7 +244,7 @@ export class DatabaseService {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
-            type TEXT NOT NULL CHECK(type IN ('script', 'popup', 'webhook', 'system', 'ai_search')),
+            type TEXT NOT NULL CHECK(type IN ('script', 'popup', 'webhook', 'system')),
             enabled INTEGER NOT NULL DEFAULT 1,
             schedule_type TEXT NOT NULL DEFAULT 'once',
             schedule_expression TEXT NOT NULL,
@@ -201,6 +253,8 @@ export class DatabaseService {
             popup_title TEXT,
             popup_content TEXT,
             popup_icon TEXT,
+            popup_position TEXT DEFAULT 'center',
+            popup_auto_dismiss INTEGER DEFAULT 0,
             webhook_url TEXT,
             webhook_method TEXT DEFAULT 'GET',
             webhook_headers TEXT,
@@ -221,17 +275,48 @@ export class DatabaseService {
             max_retries INTEGER NOT NULL DEFAULT 3,
             timeout_seconds INTEGER NOT NULL DEFAULT 300
           );
-          INSERT INTO tasks SELECT id, name, description, type, enabled, schedule_type, schedule_expression, script_path, script_args, popup_title, popup_content, popup_icon, popup_position, popup_auto_dismiss, webhook_url, webhook_method, webhook_headers, webhook_body, system_action, ai_search_query, ai_search_count, ai_enable_web_search, popup_mode, priority, tags, created_at, updated_at, last_run_at, last_run_status, next_run_at, retry_count, max_retries, timeout_seconds FROM tasks_old;
+          INSERT INTO tasks SELECT id, name, description, type, enabled, schedule_type, schedule_expression, script_path, script_args, popup_title, popup_content, popup_icon, COALESCE(popup_position, 'center'), COALESCE(popup_auto_dismiss, 0), webhook_url, webhook_method, webhook_headers, webhook_body, system_action, ai_search_query, ai_search_count, ai_enable_web_search, popup_mode, priority, tags, created_at, updated_at, last_run_at, last_run_status, next_run_at, retry_count, max_retries, timeout_seconds FROM tasks_old;
           DROP TABLE tasks_old;
           CREATE INDEX IF NOT EXISTS idx_tasks_enabled ON tasks(enabled);
           CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(type);
+          ALTER TABLE execution_history RENAME TO execution_history_old;
+          CREATE TABLE execution_history (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            task_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            output TEXT,
+            error_message TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            duration_ms INTEGER,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+          );
+          INSERT INTO execution_history SELECT * FROM execution_history_old;
+          DROP TABLE execution_history_old;
+          CREATE INDEX IF NOT EXISTS idx_history_task_id ON execution_history(task_id);
+          CREATE INDEX IF NOT EXISTS idx_history_started_at ON execution_history(started_at);
           COMMIT;
         `);
         await this.dbExec('PRAGMA foreign_keys = ON');
-        logger.info('Rebuilt tasks table with ai_search type support');
+        logger.info('Rebuilt tasks table: removed ai_search from type constraint');
       }
     } catch (e: any) {
-      logger.debug('Tasks table already updated or rebuild failed: ' + e.message);
+      logger.error('Tasks table ai_search migration failed: ' + e.message);
+      try {
+        await this.dbExec('ROLLBACK');
+      } catch {}
+      try {
+        const tasksOldExists = await this.dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks_old'") as any;
+        if (tasksOldExists) {
+          const tasksExists = await this.dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'") as any;
+          if (!tasksExists) {
+            await this.dbExec('ALTER TABLE tasks_old RENAME TO tasks');
+          } else {
+            await this.dbExec('DROP TABLE tasks_old');
+          }
+        }
+      } catch {}
     }
 
     const defaults = [

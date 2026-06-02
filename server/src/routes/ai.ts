@@ -172,7 +172,7 @@ export function aiRouter(db: DatabaseService) {
       let systemContent = `You are an intelligent task scheduler assistant. Help users create and manage automated tasks.
 You can suggest:
 - Script execution tasks (Python, Batch, PowerShell)
-- Popup notifications with custom messages
+- Popup notifications with custom messages (can use AI to process content)
 - Webhook/API calls for monitoring
 - System operations (shutdown, lock, hibernate)
 
@@ -188,7 +188,7 @@ When users describe what they want to automate, provide helpful advice AND struc
   {
     "name": "Clear task name",
     "description": "Clear description of what this task does",
-    "type": "script|popup|webhook|system|ai_search",
+    "type": "script|popup|webhook|system",
     "schedule_type": "once|cron|daily|weekly|monthly|hourly",
     "schedule_expression": "MUST follow exact format below",
     "priority": 5,
@@ -207,11 +207,12 @@ CRITICAL - schedule_expression MUST use these EXACT formats (NO Chinese, NO word
 - "hourly": "0" (minute 0-59)
 
 Type-specific fields:
-- "popup": "popup_title": "title", "popup_content": "content"
+- "popup": "popup_title": "title", "popup_content": "content", "popup_mode": "fixed|ai" (use "ai" to let AI process the content)
 - "script": "script_path": "/path/to/script"
 - "webhook": "webhook_url": "https://example.com/api"
 - "system": "system_action": "shutdown|lock|hibernate"
-- "ai_search": "ai_search_query": "search query"
+
+For AI-powered popup content (instead of ai_search type), use type "popup" with "popup_mode": "ai" and set "popup_content" as the search query or prompt.
 
 Always provide complete and valid task objects. Double-check schedule_expression format before returning.`;
 
@@ -281,7 +282,7 @@ Always provide complete and valid task objects. Double-check schedule_expression
       let systemContent = `You are an intelligent task scheduler assistant. Help users create and manage automated tasks.
 You can suggest:
 - Script execution tasks (Python, Batch, PowerShell)
-- Popup notifications with custom messages
+- Popup notifications with custom messages (can use AI to process content)
 - Webhook/API calls for monitoring
 - System operations (shutdown, lock, hibernate)
 
@@ -297,7 +298,7 @@ When users describe what they want to automate, provide helpful advice AND struc
   {
     "name": "Clear task name",
     "description": "Clear description of what this task does",
-    "type": "script|popup|webhook|system|ai_search",
+    "type": "script|popup|webhook|system",
     "schedule_type": "once|cron|daily|weekly|monthly|hourly",
     "schedule_expression": "MUST follow exact format below",
     "priority": 5,
@@ -316,11 +317,12 @@ CRITICAL - schedule_expression MUST use these EXACT formats (NO Chinese, NO word
 - "hourly": "0" (minute 0-59)
 
 Type-specific fields:
-- "popup": "popup_title": "title", "popup_content": "content"
+- "popup": "popup_title": "title", "popup_content": "content", "popup_mode": "fixed|ai" (use "ai" to let AI process the content)
 - "script": "script_path": "/path/to/script"
 - "webhook": "webhook_url": "https://example.com/api"
 - "system": "system_action": "shutdown|lock|hibernate"
-- "ai_search": "ai_search_query": "search query"
+
+For AI-powered popup content (instead of ai_search type), use type "popup" with "popup_mode": "ai" and set "popup_content" as the search query or prompt.
 
 Always provide complete and valid task objects. Double-check schedule_expression format before returning.`;
 
@@ -550,7 +552,7 @@ Return ONLY a JSON object (no markdown, no code blocks, no extra text) with this
 {
   "name": "Task name",
   "description": "What this task does",
-  "type": "script" | "popup" | "webhook" | "system" | "ai_search",
+  "type": "script" | "popup" | "webhook" | "system",
   "schedule_type": "once" | "cron" | "daily" | "weekly" | "monthly" | "hourly",
   "schedule_expression": "time or cron expression based on schedule_type",
   "priority": 5,
@@ -560,10 +562,11 @@ Return ONLY a JSON object (no markdown, no code blocks, no extra text) with this
 }
 
 For "script" type, also include: "script_path": "path", "script_args": "args"
-For "popup" type, also include: "popup_title": "title", "popup_content": "content", "popup_icon": "emoji"
+For "popup" type, also include: "popup_title": "title", "popup_content": "content", "popup_icon": "emoji", "popup_mode": "fixed|ai" (use "ai" for AI-processed content)
 For "webhook" type, also include: "webhook_url": "url", "webhook_method": "POST", "webhook_headers": {}, "webhook_body": "{}"
 For "system" type, also include: "system_action": "shutdown" | "lock" | "hibernate"
-For "ai_search" type, also include: "ai_search_query": "search query description", "ai_search_count": 10, "popup_title": "optional title"
+
+For popup with AI-processed content (e.g., search queries, news summaries), use type "popup" with "popup_mode": "ai" and set "popup_content" as the search query or prompt.
 
 For schedule_expression:
 - "once": use ISO datetime like "2026-06-01 09:00:00"
@@ -603,33 +606,49 @@ For schedule_expression:
 
       const tags = serializeTags(taskData.tags);
 
+      // Convert ai_search type to popup with popup_mode: 'ai'
+      let finalType = taskData.type || 'popup';
+      let finalPopupMode = taskData.popup_mode || 'fixed';
+      let finalPopupContent = taskData.popup_content || null;
+      let finalPopupTitle = taskData.popup_title || null;
+      let finalAiSearchQuery = taskData.ai_search_query || null;
+
+      if (finalType === 'ai_search') {
+        finalType = 'popup';
+        finalPopupMode = 'ai';
+        finalPopupContent = taskData.ai_search_query || taskData.description || '';
+        finalPopupTitle = taskData.popup_title || taskData.name || 'AI Search Result';
+        finalAiSearchQuery = taskData.ai_search_query || taskData.description || '';
+      }
+
       await db.run(`
         INSERT INTO tasks (
           id, name, description, type, enabled, schedule_type, schedule_expression,
           script_path, script_args, popup_title, popup_content, popup_icon,
           webhook_url, webhook_method, webhook_headers, webhook_body,
-          system_action, ai_search_query, ai_search_count, priority, tags, created_at, updated_at,
+          system_action, ai_search_query, ai_search_count, popup_mode, priority, tags, created_at, updated_at,
           retry_count, max_retries, timeout_seconds
-        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `, [
         id,
         taskData.name || 'AI Task',
         taskData.description || '',
-        taskData.type || 'popup',
+        finalType,
         taskData.schedule_type || 'once',
         taskData.schedule_expression || '',
         taskData.script_path || null,
         taskData.script_args || null,
-        taskData.popup_title || null,
-        taskData.popup_content || null,
+        finalPopupTitle,
+        finalPopupContent,
         taskData.popup_icon || null,
         taskData.webhook_url || null,
         taskData.webhook_method || 'POST',
         taskData.webhook_headers ? JSON.stringify(taskData.webhook_headers) : null,
         taskData.webhook_body || null,
         taskData.system_action || null,
-        taskData.ai_search_query || null,
+        finalAiSearchQuery,
         taskData.ai_search_count || 10,
+        finalPopupMode,
         taskData.priority || 5,
         tags,
         now,

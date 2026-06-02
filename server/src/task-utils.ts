@@ -42,6 +42,7 @@ export function formatTask(task: TaskRow) {
   return {
     ...task,
     enabled: Boolean(task.enabled),
+    ai_enable_web_search: Boolean(task.ai_enable_web_search),
     tags: parseStoredTags(task.tags),
     webhook_headers: task.webhook_headers ? JSON.parse(task.webhook_headers) : null,
   };

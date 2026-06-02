@@ -56,10 +56,10 @@
               </div>
               <div class="message-content">
                 <div class="message-bubble" :class="msg.role === 'user' ? 'bubble-user' : 'bubble-assistant'">
-                  <div v-if="isLoading && msg.role === 'assistant'" class="typing-indicator">
+                  <div v-if="isLoading && index === messages.length - 1 && msg.role === 'assistant' && msg.content === ''" class="typing-indicator">
                     <span></span><span></span><span></span>
                   </div>
-                  <div v-else class="message-text" v-html="formatMessage(msg.content)"></div>
+                  <div v-else-if="msg.content" class="message-text" v-html="formatMessage(msg.content)"></div>
                   <div v-if="msg.tasks && msg.tasks.length > 0" class="task-suggestions">
                     <n-divider dashed style="margin: 12px 0">推荐任务</n-divider>
                     <n-space vertical>
@@ -139,6 +139,7 @@ import { ref, nextTick, onMounted } from 'vue'
 import { useMessage, NCard, NSpace, NButton, NInput, NTag, NIcon, NAvatar, NDivider, NGrid, NGridItem, NSwitch } from 'naive-ui'
 import { marked } from 'marked'
 import { aiApi, taskApi } from '@/api'
+import { useChatStore } from '@/stores/chat'
 import {
   Sparkles as SparkleIcon,
   Droplet as WaterIcon,
@@ -159,13 +160,15 @@ marked.setOptions({
 })
 
 const message = useMessage()
-const messages = ref<Array<{ role: string; content: string; timestamp?: Date; tasks?: any[] }>>([])
+const chatStore = useChatStore()
 const userInput = ref('')
 const isLoading = ref(false)
-const webSearchEnabled = ref(false)
 const isSearching = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
 const existingTasks = ref<any[]>([])
+
+const messages = chatStore.messages
+const webSearchEnabled = chatStore.webSearchEnabled
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -264,41 +267,83 @@ const quickAction = (text: string) => {
 }
 
 const clearChat = () => {
-  messages.value = []
+  chatStore.clearMessages()
   message.success('对话已清空')
 }
 
 const createSuggestedTask = async (taskData: any) => {
   try {
+    let finalType = taskData.type
+    let finalPopupMode = 'fixed'
+    let finalPopupContent = null
+    let finalPopupTitle = null
+    let finalAiSearchQuery = null
+    let finalAiSearchCount = null
+
+    if (taskData.type === 'popup') {
+      finalPopupTitle = taskData.popup_title || taskData.name
+      finalPopupContent = taskData.popup_content || taskData.description
+      finalPopupMode = taskData.popup_mode || 'fixed'
+    } else if (taskData.type === 'script') {
+      if (!taskData.script_path) {
+        message.error('脚本任务需要提供脚本路径')
+        return
+      }
+    } else if (taskData.type === 'webhook') {
+      if (!taskData.webhook_url) {
+        message.error('Webhook任务需要提供URL')
+        return
+      }
+    } else if (taskData.type === 'system') {
+      if (!taskData.system_action) {
+        message.error('系统操作任务需要指定操作类型')
+        return
+      }
+    } else if (taskData.type === 'ai_search') {
+      finalType = 'popup'
+      finalPopupMode = 'ai'
+      finalPopupTitle = taskData.popup_title || taskData.name
+      finalPopupContent = taskData.ai_search_query || taskData.description
+      finalAiSearchQuery = taskData.ai_search_query || taskData.description
+      finalAiSearchCount = taskData.ai_search_count || 10
+    }
+
+    const scheduleExpression = taskData.schedule_expression || getDefaultScheduleExpression(taskData.schedule_type)
+
     const payload: any = {
       name: taskData.name,
       description: taskData.description,
-      type: taskData.type,
+      type: finalType,
       schedule_type: taskData.schedule_type,
-      schedule_expression: taskData.schedule_expression || getDefaultScheduleExpression(taskData.schedule_type),
+      schedule_expression: scheduleExpression,
       priority: taskData.priority ?? 5,
       max_retries: taskData.max_retries ?? 3,
       timeout_seconds: taskData.timeout_seconds ?? 300,
     }
 
-    if (taskData.type === 'popup') {
-      payload.popup_title = taskData.popup_title || taskData.name
-      payload.popup_content = taskData.popup_content || taskData.description
-    } else if (taskData.type === 'script') {
-      payload.script_path = taskData.script_path || ''
-    } else if (taskData.type === 'webhook') {
-      payload.webhook_url = taskData.webhook_url || ''
+    if (finalType === 'popup') {
+      payload.popup_title = finalPopupTitle
+      payload.popup_content = finalPopupContent
+      payload.popup_mode = finalPopupMode
+      if (finalAiSearchQuery) {
+        payload.ai_search_query = finalAiSearchQuery
+      }
+      if (finalAiSearchCount) {
+        payload.ai_search_count = finalAiSearchCount
+      }
+    } else if (finalType === 'script') {
+      payload.script_path = taskData.script_path
+    } else if (finalType === 'webhook') {
+      payload.webhook_url = taskData.webhook_url
       payload.webhook_method = 'POST'
-    } else if (taskData.type === 'system') {
-      payload.system_action = taskData.system_action || 'lock'
-    } else if (taskData.type === 'ai_search') {
-      payload.ai_search_query = taskData.ai_search_query || taskData.description
-      payload.ai_search_count = taskData.ai_search_count || 10
+    } else if (finalType === 'system') {
+      payload.system_action = taskData.system_action
     }
 
     await taskApi.create(payload)
     message.success(`任务"${taskData.name}"已创建`)
   } catch (error: any) {
+    console.error('Task creation error:', error)
     const errorMsg = error.response?.data?.message || error.response?.data?.errors?.map((e: any) => e.message).join(', ') || '创建任务失败'
     message.error(errorMsg)
   }
@@ -331,7 +376,7 @@ const sendMessage = async () => {
     content: userInput.value,
     timestamp: new Date(),
   }
-  messages.value.push(userMessage)
+  chatStore.addMessage(userMessage)
   userInput.value = ''
   isLoading.value = true
   await scrollToBottom()
@@ -339,13 +384,13 @@ const sendMessage = async () => {
   try {
     await loadExistingTasks()
     const existingTasksContext = getExistingTasksContext()
-    const apiMessages = messages.value.map(m => ({ role: m.role, content: m.content }))
+    const apiMessages = chatStore.messages.map(m => ({ role: m.role, content: m.content }))
     if (existingTasksContext) {
       apiMessages.unshift({ role: 'system', content: existingTasksContext })
     }
 
-    const assistantIndex = messages.value.length
-    messages.value.push({
+    const assistantIndex = chatStore.messages.length
+    chatStore.addMessage({
       role: 'assistant',
       content: '',
       timestamp: new Date(),
@@ -354,11 +399,11 @@ const sendMessage = async () => {
     const fullContent = await aiApi.chatStream(
       apiMessages,
       (_delta: string, fullContent: string) => {
-        messages.value[assistantIndex].content = fullContent
+        chatStore.updateMessage(assistantIndex, { content: fullContent })
         scrollToBottom()
       },
       undefined,
-      webSearchEnabled.value
+      chatStore.webSearchEnabled
     )
 
     let tasks: any[] = []
@@ -393,7 +438,7 @@ const sendMessage = async () => {
       console.log('No task suggestions found or invalid JSON')
     }
 
-    messages.value[assistantIndex].tasks = tasks.length > 0 ? tasks : undefined
+    chatStore.updateMessage(assistantIndex, { tasks: tasks.length > 0 ? tasks : undefined })
     await scrollToBottom()
   } catch (error: any) {
     message.error(error.response?.data?.message || error.message || 'AI请求失败')
@@ -573,6 +618,7 @@ onMounted(async () => {
   max-width: 70%;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .message-user .message-content {
@@ -604,7 +650,28 @@ onMounted(async () => {
 
 .message-text {
   word-break: break-word;
+  overflow-wrap: break-word;
   font-size: 14px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.message-text :deep(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+.message-text :deep(pre) {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 8px;
+  background: #f3f4f6;
+  border-radius: 4px;
+}
+
+.message-text :deep(p) {
+  margin: 8px 0;
+  word-wrap: break-word;
 }
 
 .message-text :deep(h1),
@@ -711,12 +778,20 @@ onMounted(async () => {
 .task-suggestion-card h4 {
   margin: 0 0 4px 0;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-suggestion-card p {
   margin: 0 0 12px 0;
   font-size: 12px;
   color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .input-area {

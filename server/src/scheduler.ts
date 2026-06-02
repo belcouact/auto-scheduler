@@ -957,20 +957,20 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
-    font-size: 14px;
+    font-size: 64px;
     line-height: 1.8;
     color: #1a1a1a;
     background: #ffffff;
-    padding: 20px 24px;
+    padding: 20px 28px;
   }
   h1, h2, h3, h4, h5, h6 {
     margin: 16px 0 8px 0;
     font-weight: 600;
     color: #0f172a;
   }
-  h1 { font-size: 22px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }
-  h2 { font-size: 18px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
-  h3 { font-size: 16px; }
+  h1 { font-size: 104px; border-bottom: 3px solid #e2e8f0; padding-bottom: 8px; }
+  h2 { font-size: 88px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
+  h3 { font-size: 72px; }
   p { margin: 8px 0; }
   ul, ol { margin: 8px 0 8px 20px; }
   li { margin: 4px 0; }
@@ -979,7 +979,7 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
     background: #f1f5f9;
     padding: 2px 6px;
     border-radius: 4px;
-    font-size: 13px;
+    font-size: 52px;
     font-family: 'Consolas', 'Courier New', monospace;
     color: #e11d48;
   }
@@ -989,6 +989,8 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
     border-radius: 8px;
     padding: 12px 16px;
     margin: 12px 0;
+    font-size: 56px;
+    font-family: 'Consolas', 'Courier New', monospace;
     overflow-x: auto;
   }
   pre code {
@@ -1003,6 +1005,7 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
     margin: 12px 0;
     border-radius: 0 8px 8px 0;
     color: #475569;
+    font-size: 64px;
   }
   hr {
     border: none;
@@ -1020,8 +1023,9 @@ Remove-Item -Path '${tmpFile}' -Force -ErrorAction SilentlyContinue
   }
   th, td {
     border: 1px solid #e2e8f0;
-    padding: 8px 12px;
+    padding: 12px 16px;
     text-align: left;
+    font-size: 60px;
   }
   th { background: #f8fafc; font-weight: 600; }
   tr:nth-child(even) { background: #fafafa; }
@@ -1046,11 +1050,11 @@ ${htmlContent}
       ? [
           '$screen = [System.Windows.Forms.Screen]::PrimaryScreen',
           '$workArea = $screen.WorkingArea',
-          '$formWidth = 500',
-          '$formHeight = 400',
-          `$form.Left = $workArea.Right - $formWidth - 20`,
-          `$form.Top = $workArea.Bottom - $formHeight - 20`,
-          `$form.ClientSize = New-Object System.Drawing.Size($formWidth, $formHeight)`,
+          '$formWidth = 700',
+          '$formHeight = 600',
+          `$form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual`,
+          `$form.Size = New-Object System.Drawing.Size($formWidth, $formHeight)`,
+          `$form.Location = New-Object System.Drawing.Point(($workArea.Right - $formWidth - 20), ($workArea.Bottom - $formHeight - 20))`,
         ].join('\n')
       : [
           '$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen',
@@ -1103,7 +1107,7 @@ ${htmlContent}
       '',
       '$iconLabel = New-Object System.Windows.Forms.Label',
       `$iconLabel.Text = '${safeIcon}'`,
-      "$iconLabel.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 36)",
+      "$iconLabel.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 72)",
       '$iconLabel.ForeColor = [System.Drawing.Color]::FromArgb(24, 144, 255)',
       '$iconLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter',
       '$iconLabel.Dock = [System.Windows.Forms.DockStyle]::Fill',

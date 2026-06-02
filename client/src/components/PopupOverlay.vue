@@ -63,7 +63,7 @@ const dismiss = (id: string) => {
 .popup-card {
   background: var(--popup-color, #FFFFFF);
   border-radius: 20px;
-  width: 520px;
+  width: 850px;
   max-width: 90vw;
   max-height: 80vh;
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.25), 0 8px 24px rgba(0, 0, 0, 0.15);
@@ -86,21 +86,21 @@ const dismiss = (id: string) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 70px;
+  height: 70px;
   border-radius: 14px;
   background: rgba(13, 148, 136, 0.1);
   flex-shrink: 0;
 }
 
 .popup-icon {
-  font-size: 24px;
+  font-size: 40px;
   line-height: 1;
 }
 
 .popup-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 40px;
   font-weight: 700;
   color: var(--text-color-1, #1a1a1a);
   flex: 1;
@@ -137,7 +137,7 @@ const dismiss = (id: string) => {
 .popup-body pre {
   margin: 0;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 32px;
   line-height: 1.8;
   color: var(--text-color-2, #475569);
   white-space: pre-wrap;
@@ -152,12 +152,12 @@ const dismiss = (id: string) => {
 }
 
 .popup-btn {
-  padding: 10px 28px;
+  padding: 14px 36px;
   border-radius: 10px;
   border: 1px solid var(--border-color, #E2E8F0);
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 30px;
   font-weight: 600;
   font-family: inherit;
   transition: all 0.15s;
