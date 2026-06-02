@@ -129,6 +129,14 @@ export class Server {
       this.app.listen(config.port, () => {
         logger.info(`Server running on port ${config.port}`);
       });
+
+      process.on('uncaughtException', (error) => {
+        logger.error('Uncaught Exception:', { error: error.message, stack: error.stack });
+      });
+
+      process.on('unhandledRejection', (reason) => {
+        logger.error('Unhandled Rejection:', { reason: reason instanceof Error ? reason.message : String(reason) });
+      });
     } catch (error) {
       logger.error('Failed to start server', { error: error instanceof Error ? error.message : error, stack: error instanceof Error ? error.stack : undefined });
       process.exit(1);

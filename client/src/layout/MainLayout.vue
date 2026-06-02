@@ -281,6 +281,22 @@ onUnmounted(() => {
 </script>
 
 <style>
+:root {
+  --layout-bg: #FFFFFF;
+  --layout-border: #E2E8F0;
+  --layout-text: #134E4A;
+  --layout-text-secondary: #3D6B67;
+  --layout-text-tertiary: #8BA8A3;
+}
+
+[data-theme="dark"] {
+  --layout-bg: #1E293B;
+  --layout-border: #334155;
+  --layout-text: #F1F5F9;
+  --layout-text-secondary: #CBD5E1;
+  --layout-text-tertiary: #64748B;
+}
+
 .logo {
   display: flex;
   align-items: center;
@@ -289,7 +305,8 @@ onUnmounted(() => {
   height: 60px;
   overflow: hidden;
   white-space: nowrap;
-  border-bottom: 1px solid var(--border-color, #E2E8F0);
+  border-bottom: 1px solid var(--layout-border);
+  background: var(--layout-bg);
 }
 
 .logo-icon {
@@ -316,6 +333,8 @@ onUnmounted(() => {
 
 .app-sider {
   transition: all 0.2s ease;
+  background: var(--layout-bg) !important;
+  border-right: 1px solid var(--layout-border) !important;
 }
 
 .app-content {
@@ -329,8 +348,10 @@ onUnmounted(() => {
   align-items: center;
   padding: 0 24px;
   height: 60px;
-  background: var(--card-color, #FFFFFF);
-  border-bottom: 1px solid var(--border-color, #E2E8F0);
+  background: var(--layout-bg);
+  border-bottom: 1px solid var(--layout-border);
+  color: var(--layout-text);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .header-left {
@@ -350,16 +371,18 @@ onUnmounted(() => {
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.01em;
+  color: var(--layout-text);
 }
 
 .header-time {
   font-size: 13px;
-  color: var(--text-color-3, #8BA8A3);
+  color: var(--layout-text-tertiary);
   white-space: nowrap;
 }
 
 .theme-toggle {
   transition: transform 0.2s ease;
+  color: var(--layout-text) !important;
 }
 
 .theme-toggle:hover {
@@ -378,7 +401,7 @@ onUnmounted(() => {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border-color, #E2E8F0) transparent;
+  scrollbar-color: var(--layout-border) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -390,7 +413,7 @@ onUnmounted(() => {
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: var(--border-color, #E2E8F0);
+  background-color: var(--layout-border);
   border-radius: 3px;
 }
 </style>

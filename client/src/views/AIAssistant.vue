@@ -56,7 +56,10 @@
               </div>
               <div class="message-content">
                 <div class="message-bubble" :class="msg.role === 'user' ? 'bubble-user' : 'bubble-assistant'">
-                  <div class="message-text" v-html="formatMessage(msg.content)"></div>
+                  <div v-if="isLoading && msg.role === 'assistant'" class="typing-indicator">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <div v-else class="message-text" v-html="formatMessage(msg.content)"></div>
                   <div v-if="msg.tasks && msg.tasks.length > 0" class="task-suggestions">
                     <n-divider dashed style="margin: 12px 0">推荐任务</n-divider>
                     <n-space vertical>
@@ -82,21 +85,6 @@
                   </div>
                 </div>
                 <div class="message-time">{{ formatTime(msg.timestamp) }}</div>
-              </div>
-            </div>
-
-            <div v-if="isLoading" class="message-wrapper message-assistant">
-              <div class="message-avatar">
-                <n-avatar :size="32" round style="background: #18a058">
-                  <n-icon><SparkleIcon /></n-icon>
-                </n-avatar>
-              </div>
-              <div class="message-content">
-                <div class="message-bubble bubble-assistant">
-                  <div class="typing-indicator">
-                    <span></span><span></span><span></span>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -426,6 +414,40 @@ onMounted(async () => {
   margin: 0 auto;
 }
 
+[data-theme="dark"] .chat-container {
+  background: #0F172A;
+}
+
+[data-theme="dark"] .bubble-assistant {
+  background: #1E293B;
+  color: #F1F5F9;
+  border-color: #334155;
+}
+
+[data-theme="dark"] .message-text :deep(code) {
+  background: #334155;
+  color: #F1F5F9;
+}
+
+[data-theme="dark"] .message-text :deep(blockquote) {
+  background: #1E293B;
+  border-left-color: #334155;
+}
+
+[data-theme="dark"] .message-text :deep(th) {
+  background: #1E293B;
+  color: #F1F5F9;
+}
+
+[data-theme="dark"] .message-text :deep(th),
+[data-theme="dark"] .message-text :deep(td) {
+  border-color: #334155;
+}
+
+[data-theme="dark"] .message-text :deep(tr:nth-child(even)) {
+  background: #1E293B;
+}
+
 .welcome-card {
   background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%);
   border: 1px solid #bbf7d0;
@@ -697,39 +719,6 @@ onMounted(async () => {
   color: #6b7280;
 }
 
-.typing-indicator {
-  display: flex;
-  gap: 4px;
-  padding: 8px 0;
-}
-
-.typing-indicator span {
-  width: 8px;
-  height: 8px;
-  background: #18a058;
-  border-radius: 50%;
-  animation: typing 1.4s infinite;
-}
-
-.typing-indicator span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.typing-indicator span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes typing {
-  0%, 60%, 100% {
-    transform: translateY(0);
-    opacity: 0.4;
-  }
-  30% {
-    transform: translateY(-8px);
-    opacity: 1;
-  }
-}
-
 .input-area {
   display: flex;
   flex-direction: column;
@@ -794,5 +783,38 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   flex: 1;
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.typing-indicator span {
+  width: 8px;
+  height: 8px;
+  background: #18a058;
+  border-radius: 50%;
+  animation: typing 1.4s infinite;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typing {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-8px);
+    opacity: 1;
+  }
 }
 </style>
